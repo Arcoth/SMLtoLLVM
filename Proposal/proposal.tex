@@ -1,0 +1,232 @@
+\documentclass[12pt]{article}
+\usepackage{a4wide}
+\usepackage{hyperref}
+
+\newcommand{\al}{$<$}
+\newcommand{\ar}{$>$}
+
+\parindent 0pt
+\parskip 6pt
+
+\begin{document}
+
+\thispagestyle{empty}
+
+\rightline{Robert Haberlach (rh633)}
+\medskip
+\rightline{Magdalene College}
+
+\vfil
+
+\centerline{Computer Science Tripos Part II Project Proposal}
+\vspace{0.4in}
+\centerline{\large\bf Translating C into Self-Supervising Machine Code }
+\vspace{0.3in}
+\centerline{24/09/2017}
+
+\vfil
+
+{\bf Project Originator:} Dr Peter Sewell
+
+\vspace{0.1in}
+
+{\bf Resources Required:} 
+
+\vspace{0.5in}
+
+{\bf Project Supervisor:} 
+
+\vspace{0.2in}
+
+{\bf Signature:}
+
+\vspace{0.5in}
+
+{\bf Director of Studies:} Dr John Fawcett
+
+\vspace{0.2in}
+
+{\bf Signature:}
+
+\vspace{0.5in}
+
+{\bf Overseers:} 
+
+\vspace{0.2in}
+
+{\bf Signatures:} 
+
+\vfil
+\eject
+
+
+\section{Motivation and Scope}
+
+The C Programming Language remains the prevailing foundation for a great part of today's software, much of which is safety or security critical. However, the language's semantics are far from unequivocal: there are countless scenarios whose behaviours differ across popular implementations, or for which the semantics prescribed by the ISO standard differ from the commonly implemented ones. Consequently, there persists a general confusion amongst C programmers that ultimately manifests itself in the form of faulty software. This project is intended to advance a particularly interesting approach to tackle this problem. 
+
+The proposed project is based on the work of Dr Peter Sewell et al. around \emph{Cerberus}, with the decisive paper being ``Into the Depths of C: Elaborating the De Facto Standards'' \cite{1}, whose first three chapters summarize much of what can also be regarded as motivation for this project. It discusses the results of a survey about common pitfalls concerning advanced topics in the language, like pointer provenance, object lifetime and effective types. The results indicate an alarming lack of awareness for many topics within the language by the majority of developers. \\
+For instance, in question 75 (see section 2.6), 76\% of the survey's participants stated that using a \texttt{char} array as if it held objects of another type (e.g. \texttt{int}) is fine per se, and over 65\% mentioned that they knew of real code that relied on this assumption, while this is explicitly forbidden in the ISO standard (see \S 6.5/7 in the C11 document). This holds for C++ as well, where the wording has been polished recently, and now employs the notion of an object \emph{providing storage} for another object (after explicit construction of the latter using placement new, even in the case of vacuous initialization). However, as this is an assumption underlying an imponderable amount of code, many projects must be compiled with the guerilla switch \texttt{-fno-strict-aliasing} to inhibit optimizations that could cause corresponding code to misbehave.\\
+For another example, few users are familiar with C's surprisingly strict pointer semantics. One fact only experienced C(++) developers seem to be aware of is that pointers can only be compared if either of them is null or they both point to elements or one past the last element of the same array. However, the languages' fairly weak type systems have led many programmers to believe that pointers are nothing but fancy integers, that can be manipulated and compared ad libitum. This is a dangerous misconception that is not diagnosed by an implementation, but can detected in the course of semantic analysis.\\
+And finally, there are eligible optimizations breaking undefined code that haven't been implemented in mainstream compilers yet, but might well be in future versions. Concerning the values of uninitialized variables, the following is said about exploitation of undefined memory accesses:
+\begin{quote}
+	It appears that current Clang, GCC, and MSVC
+	are not exploiting the licence of (1), though one respondent
+	said Clang is moving towards it, and one that (1) may be
+	required for Itanium.
+\end{quote}
+
+
+In conclusion, the language is incomprehensible and thus warrants semantic analysis tools. For instance, there is a website dedicated to elucidating declaration syntax in C \cite{2} by expressing its type in English\footnote{In fact, the C++ standard's native representation of a type is an English denotation thereof, e.g. ``array of 2 array of 3 const unsigned int''.}. This idea can be taken a step further by employing a language that is not natural, but sufficiently verbose to capture the possible behaviours or values of a C expression, statement or program while having a formal semantics. Execution of this language could reveal behaviour that is not well-defined (e.g. undefined or implementation-defined) or values that are not well-defined (e.g. unspecified or indeterminate) where this is unexpected, thereby discovering potential bugs that would otherwise be fiendishly difficult to track down, since many optimizations that exploit pointer provenance etc. are not applied in debug mode.
+
+After careful consideration of all existing standards, i.e. both ISO C and the mostly unscripted, elusive tribal knowledge of real world developers, the authors establish a formal ''candidate de facto memory object model`` of the C programming language called \emph{Cerberus}. This semantics is specified by a very explicit elaboration of C code into a typed call-by-value calculus called \emph{Core}. Cerberus is parametrised by the memory architecture, which enables a user to examine the semantics of code on both the deployed and any other architectures. This can be done by inspecting the Core elaboration or interpreting it, either along all execution paths granted by Cerberus, or by picking one pseudorandomly. Both the overarching ''oracle`` execution and the pseudorandom execution can be used to detect sources of undefined or non-deterministic behaviour.
+
+There exist tools that augment the produced machine code of a compilation to detect undefined behaviour at runtime; Clang sanitizers\cite{3} are a classic example. However, both this approach and its implementations are limited. Sanitizers observe the concrete execution of a program on a concrete machine. This undoubtedly cannot detect bugs that (could) occur on other architectures or under a different implementation (including future versions of a compiler). Moreover, the current implementations don't recognize all sorts of undefined executions or bark at code that occurs frequently in the wild. Quoting the paper,
+
+\begin{quote}
+	For the Clang sanitisers, we were surprised at how few
+	of our tests triggered warnings. All 13 of our structurepadding
+	tests and 9 of our other unspecified-value tests ran
+	without any sanitiser warnings (including tests that triggered
+	compile-time warnings). For example, \textbf{Q49} passes an unspecified
+	value to a library function, yet does not trigger a
+	report, though MSan does detect a flow-control choice originating
+	from an unspecified value in \textbf{Q50}. MSan flagged two
+	of the unspecified value tests (though only at \texttt{-O0}). ASan and
+	MSan did report errors on the two tests that rely on treating
+	an arbitrary integer value as a pointer (though these also
+	caused segmentation faults without the sanitisers enabled),
+	but neither flagged any of our other pointer provenance tests
+	as dubious. This might be due to deliberate design choices to
+	adopt a liberal semantics to accommodate the de facto standards,
+	or to limitations in the tools, or both.
+\end{quote}
+
+The authors examined two other tools: TrustInSoft's \texttt{tis-interpreter} and KCC. The former adheres to a overly prohibitive interpretation of the language, which is thus inapplicable in real projects, and KCC had multiple issues with the provided test suite, e.g. lack of detail (''But it gave ‘Execution failed’, with no
+further details, for the tests of 20 of our questions; ‘Translation
+failed’ for one; segfaulted at runtime for one; \dots ``) and disagreed with both the standard and Cerberus. 
+
+The major issue with analysis via Core execution is performance. The current interpreter is disproportionally slow even for small snippets, which renders Cerberus a mere Proof of Concept inapplicable in real projects. However, if the Core AST is translated to machine code, the resulting program could run roughly 100 to 1000 times faster than the interpreter (according to one of the authors). That would considerably raise the capacity of Cerberus's practical analysis space, perhaps to the extent of real world unit tests of safety critical code.
+
+\section{Resource declaration}	
+As the Cerberus tools and specifications are not open source, access to binaries or, preferably a repository, are required. This can be provided by the project supervisors or by Peter Sewell. 
+
+LLVM optimizers, backends, documentation and more are available in the public domain. 
+
+No further disk space will be needed on the MCS. If necessary, a modified version of the formal Cerberus specification could be stored as well, as it doesn't exceed 20,000 LOC.
+
+\subsection{Work computer}
+I am planning to use my own machine for virtually all of the work. After each session, the repository will be backed up privately on Github, and regularly on the MCS and an independent storage device. I accept full responsibility for my machine and I have made contingency plans to protect myself against hardware and/or software failure.
+
+\section{Substance and Structure of the Project}
+The project's goal is to complete the chain of translations that converts C code into a ''supervised`` machine program, i.e. one that detects and points out undefined or non-deterministic constructs in the original C program according to the Cerberus model. The missing link is to construct an algorithm by which a Core program is translated into an LLVM program that has the same semantics as a supervised interpretation of the original Core program. This compilation is, like Cerberus, parametrised by the memory architecture of the target, and perhaps some supervision parameters. The LLVM code is then optimized and translated, and finally executed on the target machine. This can be done via the JIT support of the LLVM API.
+
+The principal constituents of this project will be the specification, implementation and analysis of the translation. 
+
+The specification will outline how constructs are implemented in LLVM, which comprises both approximate templates of the LLVM code itself, and a description of how a given feature interacts with other features. This underlines the rigour of the translation and provides another discussion basis for the dissertation.
+
+The implementation will be written in C++17, using the LLVM C++ API\cite{LLVM}, and will be mutually dependent with the specification. It decomposes as follows: first, implement a representation of Core. Then approach pure Core expressions, proceed to simpler non-pure Core expressions like Core let, Core if, Core procedure calls, memory actions, and finally sophisticated elements like sequencing, threading and object lifetime. Test cases, both for debugging purposes and to be summarised in the dissertation to ascertain the reader of the correctness of the produced program, will be established once the specification is sufficiently precise about the behaviour, and should encompass a variety of cases like those mentioned in the introduction and paper. It would also be reasonable to adapt the Cerberus team's test suite. 
+
+The dissertation should include meaningful performance graphs and case studies to corroborate (or refute) the thesis around which the dissertation revolves: whether this debugging approach is practical and useful.
+
+\subsection{Possible extensions}
+Cerberus is not an complete model of the language, lacking the following features (cf. ''Contributions`` \cite{1}):
+\begin{itemize}
+	\setlength\itemsep{0em}
+	\item preprocessor features
+	\item C11 character-set features
+	\item floating-point and complex types (beyond simple float constants)
+	\item user-defined variadic	functions (except printf)
+	\item bitfields
+	\item \texttt{volatile}
+	\item \texttt{restrict}
+	\item \texttt{register}
+	\item generic selection
+	\item flexible array members
+	\item some exotic initialisation forms
+	\item signals
+	\item \texttt{setjmp}/\texttt{longjmp}
+	\item multiple translation units
+\end{itemize}
+Should there be time left after satisfactory completion of the previously outlined core body of work, the above are good candidates for extras. 
+
+\subsubsection{Multiple translation units}
+As it stands, only sole translation units can be elaborated into Core, although it would be useful to extend this to multiple ones, as in real projects, it would be unreasonable to duplicate entities referenced in different test cases. This task would pose several interesting hurdles, e.g. an implementation of linkage amongst translation units.
+ 
+\section{Success criteria}
+A functioning implementation of the translation on top of a largely exhaustive specification (i.e. missing at most a few immaterial constructs) is the sine qua non for the project to be considered a success. This can be ascertained by proper test cases executed on various architectures. Furthermore, there should be some demonstrative evidence that the desired performance gain has been accomplished, and how performance of the produced program scales. 
+
+\section{Starting Point}
+No prior work will have been done before October 1st, except for studying the cited paper. The basis for this project are both the LLVM and the Cerberus facility, the latter of which is elaborated in chapter 5 and Figure 1 of \cite{1}. 
+
+\section{Timetable}
+The following is a rough estimate of how the project components will be materialized time-wise over the coming academic year. 
+
+\subsection{Weeks 2-4}
+Study LLVM and its API, and how to apply them to implement languages. Implement data structures and algorithms able to represent and traverse a Core AST, and the importer to pipe the output of the Core elaboration into the program.
+
+\textbf{Milestones:} Complete representation and corresponding import of Core in the programming language chosen for the project. Acquired comprehension of LLVM's features and API.
+
+\subsection{Weeks 5-9} 
+
+Write minimalistic C samples and inspect the produced Core elaboration. Develop an understanding of the different elements and the way they are combined and interact. Proceed to rudimentarily implement less complex Core constructs in LLVM, like pure Core expressions. Begin to formalise the various translation patterns determined. 	
+  
+\textbf{Milestones}: Elementary translation procedures implemented and specified. Acquired a deeper understanding of Core. 
+
+\subsection{Weeks 10-15 (Christmas vacation)}
+Continue in this vein. During these 6 weeks, finish the translation of pure Core expressions and start work on the non-pure expressions. Formalize the established pure expression translations, that is, start work on the specification document. Start writing the dissertation by writing introductory chapters.
+
+\textbf{Milestones:} The translator is able to successfully translate simple, pure Core functions (Core definitions starting with keyword \texttt{fun}) into LLVM as specified in the document. The specification document is taking shape, and is complete for pure Core expressions. The dissertation has introduction chapters. The compiler is able to translate Core produced for simple functions with no sophisticated features (e.g. arithmetic with control flow).
+
+\subsection{Weeks 16-20}
+Present and discuss the specification with supervisors and address potential design/implementation issues. Discuss how to proceed with the translation. Approach the more sophisticated elements like \texttt{goto}, sequencing, object lifetime and threading.
+
+\textbf{Milestone:} Clear-cut strategies for the remaining implementation, optimally in form of a preliminary specification. 
+
+\subsection{Weeks 20-24}
+Based on the insights gained in the preceding weeks, implement the remaining features of Core, produce testcases and debug them on different architectures. Also, draft a brief documentation of the compiler. 
+
+\textbf{Milestone:} A complete prototype of the implementation and specification!
+
+
+\subsection{Weeks 25-27 (effective Easter vacation)}
+Polish the implementation: complete and test it thoroughly, fix or document any bugs; furthermore profile the execution of the compiled program, and optimise where reasonable. Finish the specification. 
+
+\textbf{Milestone:} Implementation and its specification finished.
+
+\subsection{Weeks 28-33}
+During this time, exam preparation will be increasingly prioritized. Finish the dissertation, including performance graphs and exhibiting a few more case studies. If time is left, do necessary work on the implementation. 
+
+\textbf{Milestone:} Dissertation finished. Case studies for specific architectures and performance analysis performed and incorporated into Dissertation.
+
+\subsection{Week 34}
+\textbf{Milestone:} Dissertation submission.
+
+
+
+ 
+\begin{thebibliography}{9}
+
+\bibitem{1}
+  Kayvan Memarian,
+  Justus Matthiesen,
+  James Lingard Kyndylan Nienhuis,
+  David Chisnall, Robert N.M. Watson, Peter Sewell: \textit{``Into the Depths of C: Elaborating the De Facto Standards''}, 2016. URL: \url{https://www.cl.cam.ac.uk/~km569/into_the_depths_of_C.pdf}
+  
+\bibitem{2}
+  URL: \url{https://cdecl.org/}
+  
+\bibitem{3} 
+  Clang 6 documentation. \\
+  URLs: \\
+  \url{https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html}\\
+  \url{https://clang.llvm.org/docs/MemorySanitizer.html}\\
+  \url{https://clang.llvm.org/docs/ThreadSanitizer.html}\\
+  \url{https://clang.llvm.org/docs/AddressSanitizer.html}
+  
+ \bibitem{LLVM}
+ \url{http://llvm.org/doxygen/index.html}\\
+ \url{http://llvm.org/docs/}
+
+\end{thebibliography}
+
+\end{document}
