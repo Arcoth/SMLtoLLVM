@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<CodeBlocks_project_file>
+	<FileVersion major="1" minor="6" />
+	<Project>
+		<Option title="SMLToLLVM" />
+		<Option execution_dir="/home/arcoth/PartIIProject/CoreToLLVM/" />
+		<Option pch_mode="2" />
+		<Option compiler="clang" />
+		<Build>
+			<Target title="Debug">
+				<Option output="bin/Debug/CoreToLLVM" prefix_auto="1" extension_auto="1" />
+				<Option working_dir="../." />
+				<Option object_output="obj/Debug/" />
+				<Option type="1" />
+				<Option compiler="clang" />
+				<Compiler>
+					<Add option="-g" />
+				</Compiler>
+			</Target>
+			<Target title="Release">
+				<Option output="bin/Release/CoreToLLVM" prefix_auto="1" extension_auto="1" />
+				<Option working_dir="../." />
+				<Option object_output="obj/Release/" />
+				<Option type="1" />
+				<Option compiler="clang" />
+				<Compiler>
+					<Add option="-O2" />
+				</Compiler>
+				<Linker>
+					<Add option="-s" />
+				</Linker>
+			</Target>
+		</Build>
+		<Compiler>
+			<Add option="-O2" />
+			<Add option="-Wall" />
+			<Add option="-std=c++17" />
+			<Add option="-march=native" />
+			<Add option="-Wextra" />
+		</Compiler>
+		<Linker>
+			<Add library="boost_system" />
+		</Linker>
+		<Unit filename="../CoreToLLVM/Absyn.hpp" />
+		<Unit filename="../CoreToLLVM/AbsynInterfaceBasic.hpp" />
+		<Unit filename="../CoreToLLVM/LabelledVariant.hpp" />
+		<Unit filename="../CoreToLLVM/Modules.hpp" />
+		<Unit filename="../CoreToLLVM/Primop.hpp" />
+		<Unit filename="../CoreToLLVM/PropList.hpp" />
+		<Unit filename="../CoreToLLVM/Stamps.hpp" />
+		<Unit filename="../CoreToLLVM/Symbol.hpp" />
+		<Unit filename="../CoreToLLVM/Types.hpp" />
+		<Unit filename="../CoreToLLVM/dynamic_wrapper.hpp" />
+		<Unit filename="../CoreToLLVM/main.cpp" />
+		<Extensions>
+			<code_completion />
+			<envvars />
+			<debugger />
+		</Extensions>
+	</Project>
+</CodeBlocks_project_file>
