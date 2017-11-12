@@ -1,2 +1,2 @@
-# CoreToLLVM
-A Cerberus Core to LLVM compiler. 
+# SMLtoLLVM
+A Standard ML to LLVM compiler.  
