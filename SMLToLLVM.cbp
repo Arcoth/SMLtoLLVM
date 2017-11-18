@@ -41,17 +41,21 @@
 		<Linker>
 			<Add library="boost_system" />
 		</Linker>
-		<Unit filename="../CoreToLLVM/Absyn.hpp" />
-		<Unit filename="../CoreToLLVM/AbsynInterfaceBasic.hpp" />
-		<Unit filename="../CoreToLLVM/LabelledVariant.hpp" />
-		<Unit filename="../CoreToLLVM/Modules.hpp" />
-		<Unit filename="../CoreToLLVM/Primop.hpp" />
-		<Unit filename="../CoreToLLVM/PropList.hpp" />
-		<Unit filename="../CoreToLLVM/Stamps.hpp" />
-		<Unit filename="../CoreToLLVM/Symbol.hpp" />
-		<Unit filename="../CoreToLLVM/Types.hpp" />
-		<Unit filename="../CoreToLLVM/dynamic_wrapper.hpp" />
-		<Unit filename="../CoreToLLVM/main.cpp" />
+		<Unit filename="Absyn.hpp" />
+		<Unit filename="AbsynInterfaceBasic.hpp" />
+		<Unit filename="LabelledVariant.hpp" />
+		<Unit filename="Lty.hpp" />
+		<Unit filename="LtyParser.hpp" />
+		<Unit filename="Modules.hpp" />
+		<Unit filename="PLambda.hpp" />
+		<Unit filename="ParsePLambda.hpp" />
+		<Unit filename="Primop.hpp" />
+		<Unit filename="PropList.hpp" />
+		<Unit filename="Stamps.hpp" />
+		<Unit filename="Symbol.hpp" />
+		<Unit filename="Types.hpp" />
+		<Unit filename="dynamic_wrapper.hpp" />
+		<Unit filename="main.cpp" />
 		<Extensions>
 			<code_completion />
 			<envvars />

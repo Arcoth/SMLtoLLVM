@@ -7,7 +7,7 @@
 
 //! This is highly incomplete. But since the project doesn't implement modules, the completion is postponed.
 
-namespace SMLNJAbsynInterface::Modules {
+namespace SMLNJInterface::Modules {
 
 using sharespec = vector<SymPath::path>;
 

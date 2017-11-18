@@ -3,7 +3,7 @@
 #include "Stamps.hpp"
 #include "Symbol.hpp"
 
-namespace SMLNJAbsynInterface {
+namespace SMLNJInterface {
 
 namespace LambdaVar {
   using lvar = int; // lambda variable id number

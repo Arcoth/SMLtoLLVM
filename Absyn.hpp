@@ -4,7 +4,7 @@
 #include "Primop.hpp"
 #include "Types.hpp"
 
-namespace SMLNJAbsynInterface {
+namespace SMLNJInterface {
 
 using region = pair<int, int>; // Ast.region
 

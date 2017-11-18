@@ -2,7 +2,7 @@
 
 #include "AbsynInterfaceBasic.hpp"
 
-namespace SMLNJAbsynInterface {
+namespace SMLNJInterface {
 
 namespace PrimCTypes {
 

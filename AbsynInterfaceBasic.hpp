@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-namespace SMLNJAbsynInterface {
+namespace SMLNJInterface {
 
 using std::optional;
 using std::string;
@@ -20,6 +20,7 @@ using std::pair;
 using std::map;
 
 using word = std::size_t;
+using word32 = std::uint32_t;
 using word8 = std::uint8_t;
 using maxint = std::intmax_t; // replacement for InfInt.int
 

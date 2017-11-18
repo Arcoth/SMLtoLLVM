@@ -2,6 +2,6 @@
 
 #include "AbsynInterfaceBasic.hpp"
 
-namespace SMLNJAbsynInterface::PropList {
+namespace SMLNJInterface::PropList {
   using holder = vector<std::exception>;
 }

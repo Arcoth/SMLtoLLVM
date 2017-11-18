@@ -3,7 +3,7 @@
 #include <memory>
 #include <utility>
 
-namespace SMLNJAbsynInterface {
+namespace SMLNJInterface {
 
 template <typename T>
 class dynamic_wrapper {

@@ -1,4 +1,5 @@
-#include "Absyn.hpp"
+#include "PLambda.hpp"
+#include "ParsePLambda.hpp"
 
 #include <iostream>
 #include <regex>
@@ -21,5 +22,10 @@ int main()
         ignore = false;
 
     std::cout << absyn << std::endl;
+
+    using namespace boost::spirit;
+    std::cout << std::boolalpha
+              << qi::phrase_parse(begin(absyn), end(absyn), SMLNJInterface::Parser::plambda_parser<std::string::iterator>{}, ascii::space);
+
     sml.wait();
 }
