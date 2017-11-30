@@ -2,29 +2,33 @@
 
 #include "Types.hpp"
 
+#include <unordered_map>
+
 namespace SMLNJInterface::PrimTyc {
 
-struct primtyc : LABELLED_VARIANT(
-  (PT_INT31)
-  (PT_INT32)
-  (PT_REAL)
-  (PT_STRING)
-  (PT_EXN)
-  (PT_ARRAY)
-  (PT_VECTOR)
-  (PT_REF)
-  (PT_CONT)
-  (PT_CCONT)
-  (PT_ARROW)
-  (PT_OBJ)
-  (PT_CFUN)
-  (PT_BARRAY)
-  (PT_RARRAY)
-  (PT_SLOCK)
-  (PT_INTINF)
-  (PT_ETAG)
-  (PT_VOID)
-);
+enum primtyc {
+  PT_INT31,
+  PT_INT32,
+  PT_REAL,
+  PT_STRING,
+  PT_EXN,
+  PT_ARRAY,
+  PT_VECTOR,
+  PT_REF,
+  PT_CONT,
+  PT_CCONT,
+  PT_ARROW,
+  PT_OBJ,
+  PT_CFUN,
+  PT_BARRAY,
+  PT_RARRAY,
+  PT_SLOCK,
+  PT_INTINF,
+  PT_ETAG,
+  PT_VOID
+};
+
+extern const std::unordered_map<std::string_view, PrimTyc::primtyc> primtyc_names;
 
 }
 
@@ -36,6 +40,8 @@ struct tkind : LABELLED_VARIANT(
   (TK_SEQ, vector<tkind>)
   (TK_FUN, pair<vector<tkind>, dynamic_wrapper<tkind>>)
 );
+
+std::istream& operator>>(std::istream& is, tkind& tk);
 
 using token = int;
 
@@ -52,13 +58,13 @@ struct tyc;
 using tycEnv = tyc;
 using dtyc = dynamic_wrapper<tyc>;
 struct tyc : LABELLED_VARIANT(
-  (TC_VAR, pair<DebIndex::index, int>)
+  (TC_VAR, tuple<DebIndex::index, int>)
   (TC_NVAR, tvar)
   (TC_PRIM, PrimTyc::primtyc)
-  (TC_FN, pair<vector<tkind>, dtyc>)
-  (TC_APP, pair<dtyc, vector<tyc>>)
+  (TC_FN, tuple<vector<tkind>, dtyc>)
+  (TC_APP, tuple<dtyc, vector<tyc>>)
   (TC_SEQ, vector<tyc>)
-  (TC_PROJ, pair<dtyc, int>)
+  (TC_PROJ, tuple<dtyc, int>)
   (TC_SUM, vector<tyc>)
   (TC_FIX, struct {
     struct {
@@ -69,16 +75,18 @@ struct tyc : LABELLED_VARIANT(
       int index;
     } family;
   })
-  (TC_TUPLE, pair<rflag, vector<tyc>>)
+  (TC_TUPLE, vector<tyc>) // we omit rflag, as it's a singleton type
   (TC_ARROW, tuple<fflag, vector<tyc>, vector<tyc>>)
-  (TC_PARROW, pair<dtyc, dtyc>)
+  (TC_PARROW, tuple<dtyc, dtyc>)
   (TC_BOX, dtyc)
   (TC_ABS, dtyc)
-  (TC_TOKEN, pair<token, dtyc>)
+  (TC_TOKEN, tuple<token, dtyc>)
   (TC_CONT, vector<tyc>)
-  (TC_IND, pair<dtyc, dtyc>)
+  (TC_IND, tuple<dtyc, dtyc>)
   (TC_ENV, tuple<dtyc, int, int, dynamic_wrapper<tycEnv>>)
 );
+
+std::istream& operator>>(std::istream& is, tyc& tyc);
 
 struct lty : LABELLED_VARIANT(
   (LT_TYC, tyc)
@@ -89,5 +97,7 @@ struct lty : LABELLED_VARIANT(
   (LT_IND, pair<dynamic_wrapper<lty>, dynamic_wrapper<lty>>)
   (LT_ENV, tuple<dynamic_wrapper<lty>, int, int, tycEnv>)
 );
+
+std::istream& operator>>(std::istream& is, lty& lty);
 
 }

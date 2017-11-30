@@ -1,5 +1,4 @@
 #include "PLambda.hpp"
-#include "ParsePLambda.hpp"
 
 #include <iostream>
 #include <regex>
@@ -10,6 +9,8 @@ namespace bp = boost::process;
 
 int main()
 {
+  using namespace SMLNJInterface;
+
     bp::ipstream pipe_stream;
     bp::opstream stream;
     bp::child sml("sml @SMLload=smlnj/base/system/sml Test.sml", bp::std_in < stream, bp::std_out > pipe_stream);
@@ -22,10 +23,12 @@ int main()
         ignore = false;
 
     std::cout << absyn << std::endl;
-
-    using namespace boost::spirit;
-    std::cout << std::boolalpha
-              << qi::phrase_parse(begin(absyn), end(absyn), SMLNJInterface::Parser::plambda_parser<std::string::iterator>{}, ascii::space);
+    {
+        std::istringstream stream(absyn);
+        PLambda::lexp l;
+        stream >> l;
+        std::cout << !stream.fail();
+    }
 
     sml.wait();
 }

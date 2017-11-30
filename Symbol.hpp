@@ -3,9 +3,9 @@
 #include "AbsynInterfaceBasic.hpp"
 
 namespace SMLNJInterface::Symbol {
-  word varInt = 0, sigInt = 1, strInt = 2, fsignInt = 3,
-       fctInt = 4, tycInt = 5, labInt = 6, tyvInt = 7,
-       fixInt = 8;
+  const word varInt = 0, sigInt = 1, strInt = 2, fsignInt = 3,
+             fctInt = 4, tycInt = 5, labInt = 6, tyvInt = 7,
+             fixInt = 8;
 
   using symbol = tuple<word, string>;
 

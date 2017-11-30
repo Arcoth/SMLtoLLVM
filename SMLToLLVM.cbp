@@ -34,25 +34,32 @@
 		<Compiler>
 			<Add option="-O2" />
 			<Add option="-Wall" />
-			<Add option="-std=c++17" />
+			<Add option="-std=c++2a" />
 			<Add option="-march=native" />
 			<Add option="-Wextra" />
+			<Add option="-ftemplate-backtrace-limit=0" />
+			<Add option="-stdlib=libc++" />
 		</Compiler>
 		<Linker>
+			<Add option="-lc++ -lc++abi -lm -lc -lgcc_s -lgcc" />
 			<Add library="boost_system" />
 		</Linker>
 		<Unit filename="Absyn.hpp" />
 		<Unit filename="AbsynInterfaceBasic.hpp" />
 		<Unit filename="LabelledVariant.hpp" />
 		<Unit filename="Lty.hpp" />
-		<Unit filename="LtyParser.hpp" />
+		<Unit filename="LtyParser.cpp" />
 		<Unit filename="Modules.hpp" />
 		<Unit filename="PLambda.hpp" />
-		<Unit filename="ParsePLambda.hpp" />
+		<Unit filename="PLambdaParser.cpp" />
+		<Unit filename="ParserUtilities.hpp" />
 		<Unit filename="Primop.hpp" />
+		<Unit filename="PrimopParser.cpp" />
 		<Unit filename="PropList.hpp" />
 		<Unit filename="Stamps.hpp" />
+		<Unit filename="StringSwitchHash.hpp" />
 		<Unit filename="Symbol.hpp" />
+		<Unit filename="TypeParser.cpp" />
 		<Unit filename="Types.hpp" />
 		<Unit filename="dynamic_wrapper.hpp" />
 		<Unit filename="main.cpp" />

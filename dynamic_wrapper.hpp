@@ -1,12 +1,16 @@
 #pragma once
 
+#include <boost/operators.hpp>
+
 #include <memory>
 #include <utility>
+
+#include <cassert>
 
 namespace SMLNJInterface {
 
 template <typename T>
-class dynamic_wrapper {
+class dynamic_wrapper : public boost::totally_ordered<dynamic_wrapper<T>> {
   std::unique_ptr<T> _ptr;
 
 public:
@@ -37,7 +41,17 @@ public:
         operator T&()      & noexcept {return get();}
        operator T&&()     && noexcept {return get();}
   operator T const&() const& noexcept {return get();}
+
+  bool operator<(const dynamic_wrapper& d) const {
+    return get() < d.get();
+  }
+  bool operator==(const dynamic_wrapper& d) const {
+    return get() == d.get();
+  }
 };
+
+template <typename T>
+dynamic_wrapper(T&&) -> dynamic_wrapper<std::remove_reference_t<T>>;
 
 }
 

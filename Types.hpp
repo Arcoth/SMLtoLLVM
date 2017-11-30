@@ -54,6 +54,8 @@ namespace Access {
     (LISTNIL)
   );
 
+  std::istream& operator>>(std::istream&, conrep&);
+
   struct consig : LABELLED_VARIANT(
     (CSIG, pair<int, int>)
     (CNIL)

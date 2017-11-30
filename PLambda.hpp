@@ -30,7 +30,7 @@ using dlexp = dynamic_wrapper<lexp>;
 
 struct dict {
   dlexp default_;
-  map<vector<tyc>, lexp> list;
+  vector<pair<vector<tyc>, lexp>> list;
 };
 
 struct lexp : LABELLED_VARIANT(
@@ -57,16 +57,18 @@ struct lexp : LABELLED_VARIANT(
   (ETAG, pair<dlexp, lty>)
 
   (CON, tuple<dataconstr, vector<tyc>, dlexp>)
-  (SWITCH, tuple<dlexp, Access::consig, map<con, lexp>, optional<dlexp>>)
+  (SWITCH, tuple<dlexp, Access::consig, vector<pair<con, lexp>>, optional<dlexp>>)
 
   (VECTOR, pair<vector<lexp>, tyc>)
   (RECORD, vector<lexp>)
   (SRECORD, vector<lexp>)
-  (SELECT, pair<int, dlexp>)
+  (SELECT, pair<vector<int>, dlexp>)
 
   (PACK, tuple<lty, vector<tyc>, vector<tyc>, dlexp>)
   (WRAP, tuple<tyc, bool, dlexp>)
   (UNWRAP, tuple<tyc, bool, dlexp>)
 );
+
+std::istream& operator>>(std::istream& is, lexp& lexp);
 
 }

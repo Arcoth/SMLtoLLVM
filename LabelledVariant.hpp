@@ -22,7 +22,14 @@ using extract_type = typename decltype(f())::type;
 #define LABELLED_VARIANT_TYPE_EXPANDER_(...) __VA_ARGS__
 #define LABELLED_VARIANT_TYPE_EXPANDER(z, n, seq) LABELLED_VARIANT_TYPE_EXPANDER_(GET_TYPE BOOST_PP_SEQ_ELEM(n, seq))
 #define DEF_LABELLED_VARIANT_(seq) \
- std::variant<BOOST_PP_ENUM(BOOST_PP_SEQ_SIZE(seq), LABELLED_VARIANT_TYPE_EXPANDER, seq)> {using variant::variant;}; \
+ std::variant<BOOST_PP_ENUM(BOOST_PP_SEQ_SIZE(seq), LABELLED_VARIANT_TYPE_EXPANDER, seq)> \
+{ \
+  using variant::variant; using type = variant; \
+  template <typename T> auto operator=(T&& t) -> decltype(*this) { \
+    variant::operator=(std::forward<T>(t)); \
+    return *this; \
+  } \
+}; \
  enum {BOOST_PP_SEQ_ENUM(BOOST_PP_SEQ_TRANSFORM(PROJ_1, , seq))}
 #define LABELLED_VARIANT(seq) DEF_LABELLED_VARIANT_(BOOST_PP_VARIADIC_SEQ_TO_SEQ(seq))
 

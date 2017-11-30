@@ -2,6 +2,9 @@
 
 #include "AbsynInterfaceBasic.hpp"
 
+#include <string_view>
+#include <unordered_map>
+
 namespace SMLNJInterface {
 
 namespace PrimCTypes {
@@ -44,6 +47,8 @@ struct numkind : LABELLED_VARIANT(
   (FLOAT, int)
 );
 
+std::istream& operator>>(std::istream& is, numkind& nk);
+
 enum arithop {
   ADD, SUB, MUL, NEG,                    // int or float
   FDIV, ABS, FSQRT, FSIN, FCOS, FTAN,    // floating point only
@@ -51,6 +56,8 @@ enum arithop {
   ANDB , ORB , XORB , NOTB,              // int only
   DIV , MOD , QUOT , REM                 // int only
 };
+
+extern const std::unordered_map<std::string_view, arithop> arithop_names;
 
 enum cmpop {
   GT, GTE, LT, LTE,  // signed comparisons
@@ -186,6 +193,8 @@ struct primop : LABELLED_VARIANT(
   (WRAP) // box a value by wrapping it
   (UNWRAP) // unbox a value by unwrapping it
 );
+
+std::istream& operator>>(std::istream& is, primop& op);
 
 } // end namespace Primop
 
