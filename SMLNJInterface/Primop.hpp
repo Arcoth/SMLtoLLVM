@@ -66,6 +66,8 @@ enum cmpop {
   FSGN
 };
 
+extern const std::unordered_map<std::string_view, cmpop> cmpop_strings;
+
 enum ccall_type {
   CCI32, /* passed as int32 */
   CCI64, /* int64, currently unused */

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "dynamic_wrapper.hpp"
-#include "LabelledVariant.hpp"
+#include "Misc/dynamic_wrapper.hpp"
+#include "Misc/LabelledVariant.hpp"
 
 #include <cstdint>
 

@@ -13,17 +13,22 @@ using lvar = LambdaVar::lvar;
 
 using dataconstr = tuple<Symbol::symbol, Access::conrep, lty>;
 
+dataconstr parse_dataconstr(std::istream& is);
+
 struct con : LABELLED_VARIANT(
-  (DATAcon, tuple<dataconstr, vector<tyc>, lvar>)
+  //(DATAcon, tuple<dataconstr, vector<tyc>, lvar>)
+  (DATAcon, tuple<Symbol::symbol, lvar>)
   (INTcon, int)
   (INT32con, std::int32_t)
   (INTINFcon, maxint)
-  (WORDcon, word32)
-  (WORD32con, word)
+  (WORDcon, word)
+  (WORD32con, word32)
   (REALcon, string)
   (STRINGcon, string)
-  (VLEN, string)
+  (VLEN, int)
 );
+
+std::istream& operator>>(std::istream& is, con&);
 
 struct lexp;
 using dlexp = dynamic_wrapper<lexp>;
@@ -45,7 +50,7 @@ struct lexp : LABELLED_VARIANT(
   (GENOP, tuple<dict, Primop::primop, lty, vector<tyc>>)
 
   (FN, tuple<lvar, lty, dlexp>)
-  (FIX, tuple<vector<lvar>, vector<lty>, vector<lexp>, dlexp>)
+  (FIX, tuple<vector<tuple<lvar, lty, lexp>>, dlexp>)
   (APP, pair<dlexp, dlexp>)
   (LET, tuple<lvar, dlexp, dlexp>)
 
@@ -57,7 +62,7 @@ struct lexp : LABELLED_VARIANT(
   (ETAG, pair<dlexp, lty>)
 
   (CON, tuple<dataconstr, vector<tyc>, dlexp>)
-  (SWITCH, tuple<dlexp, Access::consig, vector<pair<con, lexp>>, optional<dlexp>>)
+  (SWITCH, tuple<dlexp, vector<pair<con, lexp>>, optional<dlexp>>)
 
   (VECTOR, pair<vector<lexp>, tyc>)
   (RECORD, vector<lexp>)

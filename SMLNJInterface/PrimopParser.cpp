@@ -1,7 +1,7 @@
 #include "ParserUtilities.hpp"
 #include "Primop.hpp"
 
-#include "StringSwitchHash.hpp"
+#include "Misc/StringSwitchHash.hpp"
 
 #include <istream>
 
@@ -25,10 +25,17 @@ const std::unordered_map<std::string_view, arithop> arithop_names {
   // TODO
 };
 
+const std::unordered_map<std::string_view, cmpop> cmpop_strings {
+  {"=", EQL}, {"<>", NEQ},
+  {"<", LT}, {">", GT}, {"<=", LTE}, {">=", GTE},
+  {"<U", LTU}, {">U", GTU}, {"<=U", LEU}, {">=U", GEU},
+  {"fsgn", FSGN}
+};
+
 std::istream& operator>>(std::istream& is, numkind& nk) {
   char c;
   unsigned bits;
-  if (!(is >> c >> std::noskipws >> bits))
+  if (!(is >> c >> bits))
     return is;
   if (c == 'i') nk.emplace<INT>(bits);
   else if (c == 'u') nk.emplace<UINT>(bits);
@@ -40,18 +47,31 @@ std::istream& operator>>(std::istream& is, numkind& nk) {
 
 std::istream& operator>>(std::istream& is, primop& op) {
   using namespace Parser;
-  auto s = parse_identifier_nounsc(is);
+
+  auto s = extract_cond(is, [] (auto&, char c) {
+    return std::isgraph(c) && c != '_' && c != ',';});
+
   if (arithop_names.count(s)
-   || (ends_with(s, 'n') && arithop_names.count(s.substr(s.length()-1)))) {
+   || (ends_with(s, 'n') && arithop_names.count(s.substr(0, s.length()-1)))) {
     bool overflow = ends_with(s, 'n');
     if (overflow)
       s.pop_back();
 
     numkind nk;
-    if (is >> std::noskipws >> char_<'_'> >> nk >> std::skipws)
+    if (is >> char_<'_'> >> nk)
       emplace_by_value<ARITH>(op, {.oper = arithop_names.at(s),
                                    .overflow = overflow,
                                    .kind = nk});
+    else
+      on_error(is, "Failed parsing numkind for primop ", s);
+  }
+  else if (cmpop_strings.count(s)) {
+    numkind nk;
+    if (is >> char_<'_'> >> nk)
+      emplace_by_value<CMP>(op, {.oper = cmpop_strings.at(s),
+                                 .kind = nk});
+    else
+      on_error(is, "Failed parsing numkind for primop ", s);
   }
   else if (s == "markexn")
     op.emplace<MARKEXN>();

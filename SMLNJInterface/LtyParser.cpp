@@ -31,6 +31,7 @@ const std::unordered_map<std::string_view, PrimTyc::primtyc> primtyc_names{
 
 namespace SMLNJInterface::Lty
 {
+  using namespace Parser;
 
   std::istream& operator>>(std::istream& is, tkind& tk) {
     using namespace Parser;
@@ -52,40 +53,23 @@ namespace SMLNJInterface::Lty
     return is;
   }
 
-  std::istream& operator>>(std::istream& is, tyc& tyc) {
+  std::istream& operator>>(std::istream& is, tyc& t) {
     using namespace Parser;
     auto s = parse_identifier(is);
-    if (s == "TV") {
-      DebIndex::index i;
-      int j;
-      is >> char_<'('> >> i >> char_<','> >> j >> char_<')'>;
-      tyc.emplace<TC_VAR>(i, j);
-    }
-    else if (s == "NTV") {
-      is >> char_<'('>;
-      tyc.emplace<TC_NVAR>(parse_var(is));
-      is >> char_<')'>;
-    }
+    if (s == "TV")
+      parse_into<TC_VAR>(t, is, '(', DebIndex::index{}, ',', int{}, ')');
+    else if (s == "NTV")
+      parse_into<TC_NVAR>(t, is, '(', var_tag<unsigned>{}, ')');
     else if (s == "PRIM") {
       is >> char_<'('>;
       auto s = parse_identifier(is);
-      tyc.emplace<TC_PRIM>(PrimTyc::primtyc_names.at(s));
+      t.emplace<TC_PRIM>(PrimTyc::primtyc_names.at(s));
       is >> char_<')'>;
     }
-    else if (s == "TCFN") {
-      is >> char_<'('>;
-      auto v = parse_list<tkind>(is);
-      struct tyc t;
-      is >> char_<','> >> t >> char_<')'>;
-      tyc.emplace<TC_FN>(v, t);
-    }
-    else if (s == "TCAP") {
-      struct tyc t;
-      is >> char_<'('> >> t >> char_<','>;
-      auto v = parse_list<struct tyc>(is);
-      is >> char_<')'>;
-      tyc.emplace<TC_APP>(t, v);
-    }
+    else if (s == "TCFN")
+      parse_into<TC_FN>(t, is, '(', vector<tkind>{}, ',', tyc{}, ')');
+    else if (s == "TCAP")
+      parse_into<TC_APP>(t, is, '(', tyc{}, ',', vector<tyc>{}, ')');
     else if (s == "AR") {
       is >> std::ws;
       fflag flag;
@@ -101,44 +85,41 @@ namespace SMLNJInterface::Lty
       else
         flag.emplace<FF_FIXED>();
 
-      is >> char_<'('>;
-      auto v = parse_list<struct tyc>(is);
-      is >> char_<','>;
-      auto w = parse_list<struct tyc>(is);
-      is >> char_<')'>;
-      tyc.emplace<TC_ARROW>(flag, v, w);
+      t.emplace<TC_ARROW>(std::tuple_cat(std::tuple{flag},
+                                        parse(is, '(', vector<tyc>{}, ',', vector<tyc>{}, ')')));
     }
+    else if (s == "FIX") {
+      is >> char_<'('>;
+      unsigned s, i;
+      tyc t;
+      is >> string_{"size ="}   >> s
+         >> string_{"index ="}  >> i
+         >> string_{"gen ="}    >> t
+         >> string_{"prms ="};
+      auto v = parse_list<tyc>(is);
+      is >> char_<')'>;
+      emplace_by_value<TC_FIX>(t, {.family = {.size = s, .gen = t, .params = v}, .index = i});
+    }
+    else if (s == "SUM")
+      parse_into<TC_SUM>(t, is, '(', vector<tyc>{}, ')');
     else if (s.empty() && is.peek() == '{') {
       auto v = parse_sequence<struct tyc, '{', ',', '}'>(is);
-      tyc.emplace<TC_TUPLE>(v);
+      t.emplace<TC_TUPLE>(v);
     }
-    else
-      on_error(is, "tyc parser unknown symbol ", s);
     return is;
   }
 
-
-  std::istream& operator>>(std::istream& is, lty& lty) {
+  std::istream& operator>>(std::istream& is, lty& l) {
     using namespace Parser;
     auto s = parse_identifier(is);
     if (s == "TYC")
-      is >> char_<'('> >> lty.emplace<tyc>() >> char_<')'>;
-    else if (s == "STR") {
-      is >> char_<'('>;
-      auto v = parse_list<struct lty>(is);
-      is >> char_<')'>;
-      lty.emplace<LT_STR>(v);
-    }
-    else if (s == "POL") {
-      is >> char_<'('>;
-      auto v1 = parse_list<tkind>(is);
-      is >> char_<','>;
-      auto v2 = parse_list<struct lty>(is);
-      is >> char_<')'>;
-      lty.emplace<LT_POLY>(v1, v2);
-    }
+      parse_into<LT_TYC>(l, is, '(', tyc{}, ')');
+    else if (s == "STR")
+      parse_into<LT_STR>(l, is, '(', vector<lty>{}, ')');
+    else if (s == "POL")
+      parse_into<LT_POLY>(l, is, '(', vector<tkind>{}, ',', vector<lty>{}, ')');
     else
-      on_error(is, "lty parser unknown symbol ", s);
+      on_error(is, "lty parser unknown name ", s);
     return is;
   }
 }

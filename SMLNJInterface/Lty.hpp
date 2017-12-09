@@ -68,12 +68,12 @@ struct tyc : LABELLED_VARIANT(
   (TC_SUM, vector<tyc>)
   (TC_FIX, struct {
     struct {
-      int size;
-      vector<string> names;
+      unsigned size;
+      // vector<string> names; // not conveyed by the front-end
       dtyc gen;
       vector<tyc> params;
-      int index;
     } family;
+    unsigned index;
   })
   (TC_TUPLE, vector<tyc>) // we omit rflag, as it's a singleton type
   (TC_ARROW, tuple<fflag, vector<tyc>, vector<tyc>>)

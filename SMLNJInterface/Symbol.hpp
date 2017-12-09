@@ -9,6 +9,8 @@ namespace SMLNJInterface::Symbol {
 
   using symbol = tuple<word, string>;
 
+  symbol parse_symbol(std::istream& is);
+
   enum Namespace {
     VALspace, TYCspace, SIGspace, STRspace, FCTspace,
     FIXspace, LABspace, TYVspace, FSIGspace

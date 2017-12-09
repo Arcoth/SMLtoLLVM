@@ -6,78 +6,147 @@
 
 namespace SMLNJInterface::PLambda {
 
-std::istream& operator>>(std::istream& is, lexp& lexp) {
+using namespace Parser;
+
+dataconstr parse_dataconstr(std::istream& is) {
+  is >> char_<'('>;
+  auto sym = Symbol::parse_symbol(is);
+  Access::conrep crep;
+  lty t;
+  is >> char_<','> >> crep >> char_<','> >> t >> char_<')'>;
+  return {sym, crep, t};
+}
+
+std::istream& operator>>(std::istream& is, con& c) {
+  is >> std::ws;
+  if (is.peek() == '(') {
+    string s;
+    getline(is, s, ')');
+         if (s == "I32") {std::int32_t x; is >> x; c.emplace<INT32con>(x);}
+    else if (s == "II")  {      maxint x; is >> x; c.emplace<INTINFcon>(x);}
+    else if (s == "W")   {        word x; is >> x; c.emplace<WORDcon>(x);}
+    else if (s == "W32") {      word32 x; is >> x; c.emplace<WORD32con>(x);}
+    else on_error(is, "Invalid type in con: ", s);
+  }
+  else if (std::isdigit(is.peek())) {
+    // TODO: handle floating point? Handle VLEN?
+    int i;
+    is >> i;
+    c.emplace<INTcon>(i);
+  }
+  else if(is.peek() == '"') {
+    string s;
+    is >> quoted(s);
+    c.emplace<STRINGcon>(s);
+  }
+  // Here we are certain it must be a datacon:
+  else {
+    auto s = Symbol::parse_symbol(is);
+    is >> char_<'.'>;
+    auto v = parse_var(is);
+    c.emplace<DATAcon>(s, v);
+  }
+  return is;
+}
+
+void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
   using namespace Parser;
-  auto s = parse_identifier(is);
   if (s.empty()) {
-    auto put_number = [&lexp, &is] (auto x) {
-      is >> x;
-      lexp = x;
-    };
     char c = is.get();
     if (c == '(') {
       auto s = parse_identifier(is);
       is >> char_<')'>;
-      if (s == "W") put_number(word{});
-      else if (s == "W32") put_number(word32{});
-      else if (s == "I32") {
-        std::int32_t i; is >> i; lexp.emplace<INT32>(i);
-      }
+           if (s == "W") parse_into<WORD>(exp, is, word{});
+      else if (s == "W32") parse_into<WORD32>(exp, is, word32{});
+      else if (s == "I32") parse_into<INT32>(exp, is, std::int32_t{});
+      else if (s == "APP") // followed by a LET expression
+        is >> exp;
     }
     else if (c == '"') {
       string s;
       getline(is, s, '"');
-      lexp.emplace<STRING>(s);
+      exp.emplace<STRING>(s);
     }
     else {
+      // TODO: handle floating point?
       is.putback(c);
-      int i; is >> i; lexp.emplace<INT>(i);
+      parse_into<INT>(exp, is, int{});
     }
   }
   else if (s[0] == 'v') { // VAR or LET
     int i = boost::lexical_cast<int>(s.substr(1));
-    if (!is.eof() && (is >> std::ws).peek() == '=') { // check whether this is a LET expression
+    if ((is >> std::ws).peek() == '=') { // check whether this is a LET expression
       is.ignore();
-      struct lexp r, l;
-      is >> r >> l;
-      lexp.emplace<LET>(i, dynamic_wrapper(r), dynamic_wrapper(l));
+      lexp a, b;
+      if (!(is >> a))
+        on_error(is, "Failed parsing first LET expression for ", s);
+      else if (!(is >> b))
+        on_error(is, "Failed parsing second LET expression for ", s);
+      else
+        exp.emplace<LET>(i, a, b);
     }
     else
-      lexp.emplace<VAR>(i);
+      exp.emplace<VAR>(i);
   }
-  else if (s == "PRM") {
-    Primop::primop p;
-    lty l;
-    is >> char_<'('> >> p >> char_<','> >> l >> char_<','>;
-    auto v = parse_list<tyc>(is);
-    is >> char_<')'>;
-    lexp.emplace<PRIM>(p, l, v);
-  }
-  else if (s == "FN") {
+  else if (s == "PRM")
+    parse_into<PRIM>(exp, is, '(', Primop::primop{}, ',', lty{}, ',', vector<tyc>{}, ')');
+  else if (s == "FN")
+    parse_into<FN>(exp, is, '(', var_tag<lvar>{}, ':', lty{}, ',', lexp{}, ')');
+  else if (s == "FIX") {
     is >> char_<'('>;
-    lvar v = parse_var(is);
-    lty t;
-    struct lexp l;
-    is >> char_<':'> >> t >> char_<','> >> l >> char_<')'>;
-    lexp.emplace<FN>(v, t, l);
+    vector<tuple<lvar, lty, lexp>> v;
+    do {
+      v.emplace_back();
+      std::get<lvar>(v.back()) = parse_var(is);
+      is >> char_<':'> >> std::get<lty>(v.back())
+         >> string_{"::"} >> std::get<lexp>(v.back()) >> std::ws;
+    } while(is.peek() == 'v');
+    lexp l;
+    is >> string_{"IN"} >> l >> char_<')'>;
+    exp.emplace<FIX>(move(v), l);
   }
-  else if (s == "APP") {
-    struct lexp a, b;
-    is >> char_<'('> >> a >> char_<','> >> b >> char_<')'>;
-    lexp.emplace<APP>(a, b);
-  }
+  else if (s == "APP")
+    parse_into<APP>(exp, is, '(', lexp{}, ',', lexp{}, ')');
   else if (s == "RCD")
-    lexp.emplace<RECORD>(parse_sequence<struct lexp, '(', ',', ')'>(is));
+    exp.emplace<RECORD>(parse_sequence<lexp, '(', ',', ')'>(is));
   else if (s == "SRCD")
-    lexp.emplace<SRECORD>(parse_sequence<struct lexp, '(', ',', ')'>(is));
+    exp.emplace<SRECORD>(parse_sequence<lexp, '(', ',', ')'>(is));
   else if (s == "RAISE") {
-    lty t; struct lexp l;
-    is >> char_<'('> >> t >> char_<','> >> l >> char_<')'>;
-    lexp.emplace<RAISE>(l, t);
+    auto tup = parse(is, '(', lty{}, ',', lexp{}, ')');
+    exp.emplace<RAISE>(std::get<1>(tup), std::get<0>(tup));
   }
   else if (s == "CON") {
-    // TODO
-    throw std::logic_error{""};
+    is >> char_<'('>;
+    auto dc = parse_dataconstr(is);
+    is >> char_<','>;
+    auto v = parse_list<tyc>(is);
+    lexp l;
+    is >> char_<','> >> l >> char_<')'>;
+    exp.emplace<CON>(dc, move(v), l);
+  }
+  else if (s == "TFN") {
+    is >> char_<'('>;
+    auto v = parse_sequence<tkind, '(', ',', ')'>(is);
+    lexp l;
+    is >> l >> char_<')'>;
+    exp.emplace<TFN>(move(v), l);
+  }
+  else if (starts_with(s, "SWI")) {
+    lexp l;
+    parse_lexp(is, s.substr(3), l);
+    is >> string_{"of"} >> char_<'('>;
+    vector<pair<con, lexp>> v;
+    do {
+      con c;
+      lexp e;
+      is >> c >> string_{"=>"} >> e >> std::ws;
+      v.emplace_back(c, e);
+    } while(is.peek() != ')' && is.peek() != '_');
+    optional<dlexp> default_exp;
+    if (is.peek() == '_')
+      is.ignore() >> string_{"=>"} >> default_exp.emplace();
+    is >> char_<')'>;
+    exp.emplace<SWITCH>(l, move(v), default_exp);
   }
   else
     on_error(is, "lexp parser unknown symbol ", s);
@@ -85,9 +154,12 @@ std::istream& operator>>(std::istream& is, lexp& lexp) {
   is >> std::ws;
   if (is.peek() == '[') {
     auto v = parse_list<lvar>(is);
-    lexp.emplace<SELECT>(v, dlexp{std::move(lexp)});
+    exp.emplace<SELECT>(move(v), dlexp{std::move(exp)});
   }
+}
 
+std::istream& operator>>(std::istream& is, lexp& lexp) {
+  parse_lexp(is, Parser::parse_identifier(is), lexp);
   return is;
 }
 
