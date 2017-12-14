@@ -23,7 +23,7 @@ public:
 
   dynamic_wrapper(dynamic_wrapper&&) = default;
   dynamic_wrapper(dynamic_wrapper const& other)
-    : _ptr(std::make_unique<T>((T const&)other)) {}
+    : _ptr(std::make_unique<T>(other.get())) {}
 
   dynamic_wrapper& operator=(dynamic_wrapper&&) = default;
   dynamic_wrapper& operator=(dynamic_wrapper const& other) {

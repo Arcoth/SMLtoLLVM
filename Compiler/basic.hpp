@@ -1,6 +1,7 @@
 #pragma once
 
 #include <exception>
+#include <ostream>
 #include <set>
 #include <string>
 
@@ -30,5 +31,28 @@ Set set_union(Set s, C const& c) {
   s.insert(std::begin(c), std::end(c));
   return s;
 }
+
+template <typename T, typename U>
+std::ostream& operator<<(std::ostream& os, std::pair<T, U> const& p) {
+  return os << p.first << " -> " << p.second;
+}
+
+template <typename Range>
+auto operator<<(std::ostream& os, Range&& r)
+  -> std::enable_if_t<!std::is_same_v<std::decay_t<decltype(*std::begin(r))>, char>, std::ostream&> {
+  os << '{';
+  bool first = true;
+  for (auto& x : r) {
+    if (first)
+      first = false;
+    else
+      os << ", ";
+    os << x;
+  }
+  os << '}';
+  return os;
+}
+
+
 
 }

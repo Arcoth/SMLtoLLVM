@@ -2,8 +2,6 @@
 
 #include "ParserUtilities.hpp"
 
-#include <boost/lexical_cast.hpp>
-
 namespace SMLNJInterface::PLambda {
 
 using namespace Parser;
@@ -74,7 +72,7 @@ void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
     }
   }
   else if (s[0] == 'v') { // VAR or LET
-    int i = boost::lexical_cast<int>(s.substr(1));
+    int i = std::stoi(std::string{s.substr(1)});
     if ((is >> std::ws).peek() == '=') { // check whether this is a LET expression
       is.ignore();
       lexp a, b;
@@ -109,8 +107,10 @@ void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
     parse_into<APP>(exp, is, '(', lexp{}, ',', lexp{}, ')');
   else if (s == "RCD")
     exp.emplace<RECORD>(parse_sequence<lexp, '(', ',', ')'>(is));
-  else if (s == "SRCD")
-    exp.emplace<SRECORD>(parse_sequence<lexp, '(', ',', ')'>(is));
+  else if (s == "SRCD") {
+    auto v = parse_sequence<lexp, '(', ',', ')'>(is);
+    exp.emplace<SRECORD>(v);
+  }
   else if (s == "RAISE") {
     auto tup = parse(is, '(', lty{}, ',', lexp{}, ')');
     exp.emplace<RAISE>(std::get<1>(tup), std::get<0>(tup));

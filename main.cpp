@@ -1,3 +1,4 @@
+#include "SMLNJInterface/ParserUtilities.hpp"
 #include "Compiler/compile.hpp"
 
 #include "llvm/ADT/APFloat.h"
@@ -52,7 +53,28 @@ int main() try
 
   LLVMContext context;
   Module module("SML default module", context);
-  SMLCompiler::compile_top(plambda, module);
+
+  for (auto& [var, name] : unit.exportedDecls) {
+    auto s = Parser::parse_identifier(stream);
+    if (!stream) {
+      std::cerr << "Couldn't extract names of entities!";
+      return 0;
+    }
+    if (s == "fun" || s == "val")
+      name = Parser::parse_identifier(stream);
+    else if (s != "datatype") {
+      std::cerr << "Unrecognised entity kind: " << s;
+      return 0;
+    }
+    stream.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+  }
+
+  for (auto& [var, exp] : unit.globalDecls)
+    std::cout << var << ", freevars = " << freeVars(exp) << "\n";
+  std::cout << "Exporting " << unit.exportedDecls << '\n';
+
+  // Invoke the compiler.
+  SMLCompiler::compile_top(unit, module);
 
   // Print out all of the generated code.
   module.print(errs(), nullptr);

@@ -17,6 +17,16 @@
 					<Add option="-g" />
 				</Compiler>
 			</Target>
+			<Target title="Test main">
+				<Option output="bin/Debug/CoreToLLVM" prefix_auto="1" extension_auto="1" />
+				<Option working_dir="../." />
+				<Option object_output="obj/Debug/" />
+				<Option type="1" />
+				<Option compiler="clang" />
+				<Compiler>
+					<Add option="-g" />
+				</Compiler>
+			</Target>
 			<Target title="Release">
 				<Option output="bin/Release/CoreToLLVM" prefix_auto="1" extension_auto="1" />
 				<Option working_dir="../." />
@@ -34,35 +44,48 @@
 		<Compiler>
 			<Add option="-O2" />
 			<Add option="-Wall" />
-			<Add option="-std=c++2a" />
 			<Add option="-march=native" />
 			<Add option="-Wextra" />
 			<Add option="-ftemplate-backtrace-limit=0" />
 			<Add option="-stdlib=libc++" />
+			<Add option="-std=c++2a" />
+			<Add option="-D_LIBCPP_ENABLE_CXX17_REMOVED_BINDERS" />
+			<Add directory="/home/arcoth/PartIIProject/SMLtoLLVM/" />
 		</Compiler>
 		<Linker>
 			<Add option="-lc++ -lc++abi -lm -lc -lgcc_s -lgcc" />
+			<Add option="`llvm-config --cxxflags --ldflags --system-libs --libs core native`" />
 			<Add library="boost_system" />
 		</Linker>
-		<Unit filename="Absyn.hpp" />
-		<Unit filename="AbsynInterfaceBasic.hpp" />
-		<Unit filename="LabelledVariant.hpp" />
-		<Unit filename="Lty.hpp" />
-		<Unit filename="LtyParser.cpp" />
+		<Unit filename="Compiler/basic.hpp" />
+		<Unit filename="Compiler/compile.cpp" />
+		<Unit filename="Compiler/compile.hpp" />
+		<Unit filename="GCPlugin/GC.cpp" />
+		<Unit filename="Misc/LabelledVariant.hpp" />
+		<Unit filename="Misc/StringSwitchHash.hpp" />
+		<Unit filename="Misc/dynamic_wrapper.hpp" />
 		<Unit filename="Modules.hpp" />
-		<Unit filename="PLambda.hpp" />
-		<Unit filename="PLambdaParser.cpp" />
-		<Unit filename="ParserUtilities.hpp" />
-		<Unit filename="Primop.hpp" />
-		<Unit filename="PrimopParser.cpp" />
-		<Unit filename="PropList.hpp" />
-		<Unit filename="Stamps.hpp" />
-		<Unit filename="StringSwitchHash.hpp" />
-		<Unit filename="Symbol.hpp" />
-		<Unit filename="TypeParser.cpp" />
-		<Unit filename="Types.hpp" />
-		<Unit filename="dynamic_wrapper.hpp" />
-		<Unit filename="main.cpp" />
+		<Unit filename="SMLNJInterface/Absyn.hpp" />
+		<Unit filename="SMLNJInterface/AbsynInterfaceBasic.hpp" />
+		<Unit filename="SMLNJInterface/Lty.hpp" />
+		<Unit filename="SMLNJInterface/LtyParser.cpp" />
+		<Unit filename="SMLNJInterface/PLambda.hpp" />
+		<Unit filename="SMLNJInterface/PLambdaParser.cpp" />
+		<Unit filename="SMLNJInterface/ParserUtilities.hpp" />
+		<Unit filename="SMLNJInterface/Primop.hpp" />
+		<Unit filename="SMLNJInterface/PrimopParser.cpp" />
+		<Unit filename="SMLNJInterface/PropList.hpp" />
+		<Unit filename="SMLNJInterface/Stamps.hpp" />
+		<Unit filename="SMLNJInterface/Symbol.hpp" />
+		<Unit filename="SMLNJInterface/TypeParser.cpp" />
+		<Unit filename="SMLNJInterface/Types.hpp" />
+		<Unit filename="main.cpp">
+			<Option target="Debug" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="test.cpp">
+			<Option target="Test main" />
+		</Unit>
 		<Extensions>
 			<code_completion />
 			<envvars />

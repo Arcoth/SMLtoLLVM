@@ -103,7 +103,7 @@ std::vector<T> parse_sequence(std::istream& is) {
   for(;;) {
     vec.emplace_back();
     char c;
-    is >> vec.back() >> std::ws >> c;
+    is >> vec.back() >> c;
     if (c != Sep) {
       if(c != Delim)
         on_error(is, "parse_sequence interrupted by ", c);
