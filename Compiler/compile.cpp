@@ -5,6 +5,7 @@
 #include <llvm/Support/raw_ostream.h>
 
 #include <boost/container/static_vector.hpp>
+#include <boost/range/adaptor/transformed.hpp>
 
 #include <iostream>
 #include <iterator>
@@ -64,17 +65,33 @@ std::set<lvar> freeVars( lexp const& exp ) {
       }
       return s;
     }
+    case CON: {
+      using namespace Access;
+
+      auto& [constr, tycs, arg] = get<CON>(exp);
+      auto fvs = freeVars(arg);
+      // Compute any references to lambda-bound variables. Ignore SUSPs for now,.
+      if (auto exn = get_if<EXN>(&get<Access::conrep>(constr))) {
+        while (auto next = get_if<PATH>(exn))
+          exn = &next->first;
+        if (auto v = get_if<LVAR>(exn))
+          fvs.insert(*v);
+      }
+      return fvs;
+    }
+
+    //! Exceptions are not supported yet; ignore raises and handles.
+    case RAISE:  return {};
+
 
     // Simple compositional cases:
 
-    case RAISE:  return freeVars(get<dlexp>( get<RAISE>(exp)));
     case HANDLE: return freeVars(get<0>(    get<HANDLE>(exp)));
     case ETAG:   return freeVars(get<dlexp>(  get<ETAG>(exp)));
     case SELECT: return freeVars(get<dlexp>(get<SELECT>(exp)));
     case PACK:   return freeVars(get<dlexp>(  get<PACK>(exp)));
     case WRAP:   return freeVars(get<dlexp>(  get<WRAP>(exp)));
     case UNWRAP: return freeVars(get<dlexp>(get<UNWRAP>(exp)));
-    case CON:    return freeVars(get<dlexp>(   get<CON>(exp)));
     case TFN:    return freeVars(get<dlexp>(   get<TFN>(exp)));
     case TAPP:   return freeVars(get<dlexp>(  get<TAPP>(exp)));
 
@@ -92,38 +109,43 @@ std::set<lvar> freeVars( lexp const& exp ) {
 SMLTranslationUnit::SMLTranslationUnit(lexp const& exp) {
   if (exp.index() != FN)
     throw CompileFailException{"getGlobalDeclarations: Argument not a function!"};
-  auto& top_fn = get<FN>(exp);
 
-  lexp const* body = &get<2>(get<LET>(get<dlexp>(top_fn).get())).get();
+  lexp const* body = &get<dlexp>(get<FN>(exp)).get();
 
-  // The body should not depend on the structure argument.
-  if (!freeVars(*body).empty())
-    throw CompileFailException{"getGlobalDeclarations: Argument not a pure function over structures!"};
-
-  while (body->index() == LET) {
+  for (bool is_intro = true; body->index() == LET;) {
     auto& [var, assign, value] = get<LET>(*body);
-    globalDecls.emplace_back(var, assign);
+    if (is_intro && assign.get().index() != SELECT) {
+      // For now, assume that we don't have dependencies on imports
+      auto freevars = freeVars(*body);
+      if (!freevars.empty())
+        throw CompileFailException{"getGlobalDeclarations: Unresolved imports: " + std::to_string(*freevars.begin()) + ", ..."};
+      is_intro = false;
+    }
+    if (!is_intro)
+      globalDecls.emplace_back(var, assign);
     body = &value.get();
   }
 
+
   if (body->index() != SRECORD)
-    throw CompileFailException{"getGlobalDeclarations: Function doesn't yield structure!"};
+    throw CompileFailException{"getGlobalDeclarations: Function doesn't yield a structural record!"};
   auto& params = get<SRECORD>(*body);
   for (auto& e : params) {
     if (e.index() != VAR)
-      throw CompileFailException{"getGlobalDeclarations: Function doesn't yield structure of variables!"};
+      throw CompileFailException{"getGlobalDeclarations: Function doesn't yield structural record of variables!"};
     exportedDecls.emplace(get<VAR>(e), std::string{});
   }
 }
 
 // For now, we will employ malloc.
-Value* createAllocation(Module& module, IRBuilder<>& builder, std::size_t x) {
+Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type, std::size_t n = 1) {
   static const auto size_type = Type::getInt64Ty(module.getContext());
   static const auto malloc_ptr
     = cast<Function>(module.getOrInsertFunction("malloc",
                                  FunctionType::get(Type::getInt8Ty(module.getContext())->getPointerTo(),
                                                    {size_type}, false)));
-  return builder.CreateCall(malloc_ptr, ConstantInt::get(size_type, x), "storage");
+  auto ptr = builder.CreateCall(malloc_ptr, ConstantInt::get(size_type, n * DataLayout{&module}.getTypeAllocSize(type)), "storage");
+  return builder.CreatePointerCast(ptr, type->getPointerTo(), "allocatedobj");
 }
 
 Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression, std::map<PLambda::lvar, Value*> const& variables);
@@ -145,15 +167,25 @@ Value* compile_primop(Module& module, IRBuilder<>& builder,
   switch (op.index()) {
     case ARITH: {
       auto& [oper, overflow, kind] = get<ARITH>(op);
-      switch (oper) {
-        #define PRIMOP_BIN_I(fun) \
-          assert_arity(arg_values, 2); \
-          return builder.Create##fun(arg_values[0], arg_values[1]);
-        case MUL: PRIMOP_BIN_I(Mul)
-        case ADD: PRIMOP_BIN_I(Add)
-        case SUB: PRIMOP_BIN_I(Sub)
-        default:
-          throw UnsupportedException{"Arithmetic operator not implemented: " + std::to_string(oper)};
+      if (kind.index() == Primop::FLOAT)
+        throw UnsupportedException{"Floating point arithmetic"};
+      else {
+        // Integers are stored unboxed:
+        Value* result;
+        for (auto& val : arg_values)
+          val = builder.CreatePtrToInt(val, Type::getInt64Ty(module.getContext()));
+        switch (oper) {
+          #define PRIMOP_BIN_I(fun) \
+            assert_arity(arg_values, 2); \
+            result = builder.Create##fun(arg_values[0], arg_values[1]); \
+            break;
+          case MUL: PRIMOP_BIN_I(Mul)
+          case ADD: PRIMOP_BIN_I(Add)
+          case SUB: PRIMOP_BIN_I(Sub)
+          default:
+            throw UnsupportedException{"Arithmetic operator not implemented: " + std::to_string(oper)};
+        }
+        return builder.CreateIntToPtr(result, genericPointerType(module.getContext()));
       }
     }
     default:
@@ -163,8 +195,8 @@ Value* compile_primop(Module& module, IRBuilder<>& builder,
 
 Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression, std::map<PLambda::lvar, Value*> const& variables) {
   auto& ctx = module.getContext();
-  auto make_index = [i32_t = IntegerType::get(ctx, 32)] (std::size_t s) {
-    return ConstantInt::get(i32_t, s);
+  auto recurse = [&] (lexp const& e) {
+    return compile(module, builder, e, variables);
   };
   switch (expression.index()) {
     case VAR: {
@@ -185,17 +217,16 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression, std
       auto wrapper_type = StructType::create({genericFunctionType(ctx)->getPointerTo(),
                                               env_array_type}, F->getName().str() + "Wrapper");
 
-      // Allocate and fill the closure with captured variables.
-      auto memory = createAllocation(module, builder, DataLayout{&module}.getTypeAllocSize(wrapper_type));
-      memory->mutateType(wrapper_type->getPointerTo());
-
-      builder.CreateStore(F, builder.CreateGEP(wrapper_type, memory, {make_index(0), make_index(0)}, "funptrslot")); // store function pointer...
-      auto env_ptr = builder.CreateGEP(wrapper_type, memory, {make_index(0), make_index(1), make_index(0)}, "env");
+      auto aggregate_v = builder.CreateInsertValue(UndefValue::get(wrapper_type), F, {0}, "funptrslot"); // store function pointer...
       {
         unsigned index = 0;
         for (auto var : free_vars)
-          builder.CreateStore(variables.at(var), builder.CreateGEP(env_array_type->getElementType(), env_ptr, make_index(index++), "varslot"));
+          aggregate_v = builder.CreateInsertValue(aggregate_v, variables.at(var), {1, index++}, "closure");
       }
+
+      // Allocate and fill the closure with captured variables.
+      auto memory = createAllocation(module, builder, wrapper_type);
+      builder.CreateStore(aggregate_v, memory);
 
       BasicBlock *BB = BasicBlock::Create(ctx, "entry", F);
       IRBuilder<> fun_builder(BB);
@@ -205,27 +236,27 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression, std
       {
         unsigned index = 0;
         auto env = std::next(F->arg_begin()); // second argument is the environment.
-        outs() << "type: "; env->print(outs()); outs () << '\n';
         for (auto var : free_vars)
-          inner_variables[var] = builder.CreateExtractValue(env, {0, index++}, "extract");
+          inner_variables[var] = fun_builder.CreateLoad(fun_builder.CreateConstGEP1_32(env, index++, "capturedptr"), "captured");
       }
       inner_variables[fn_var] = F->arg_begin(); // first argument is the argument
 
-      fun_builder.CreateRet(compile(module, fun_builder, fn_body, inner_variables));
+      if (auto retv = compile(module, fun_builder, fn_body, inner_variables))
+        fun_builder.CreateRet(retv);
+      else
+        fun_builder.CreateRet(ConstantPointerNull::get(genericPointerType(ctx)));
 
-      return memory;
+      return builder.CreatePointerCast(memory, genericPointerType(ctx));
     }
     case LET: {
       auto& [let_var, assign_exp, body_exp] = get<LET>(expression);
-      auto assign_value = compile(module, builder, assign_exp, variables);
+      auto assign_value = recurse(assign_exp);
       auto inner_vars = variables;
       inner_vars.emplace(let_var, assign_value);
       return compile(module, builder, body_exp, inner_vars);
     }
     case APP: {
       auto& [fn_exp, arg_exp] = get<APP>(expression);
-      auto fn_val  = compile(module, builder, fn_exp,  variables),
-           arg_val = compile(module, builder, arg_exp, variables);
       // Primitive operations require special treatment:
       if (fn_exp.get().index() == PRIM) {
         auto& prim_oper = get<Primop::primop>(get<PRIM>(fn_exp.get()));
@@ -235,16 +266,35 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression, std
       else {
         static auto wrapper_type = StructType::create({genericFunctionType(ctx)->getPointerTo(),
                                                        ArrayType::get(genericPointerType(ctx), 0)}, "GenericWrapper");
-        fn_val->mutateType(wrapper_type->getPointerTo());
-        return builder.CreateCall(genericFunctionType(ctx), builder.CreateGEP(wrapper_type, fn_val, {make_index(0), make_index(0)}, "funptr"),
-                                  {arg_val,
-                                   builder.CreateGEP(wrapper_type, fn_val, {make_index(0), make_index(1)}, "envptr")});
+        auto closure_ptr = builder.CreatePointerCast(recurse(fn_exp), wrapper_type->getPointerTo(), "closureptr");
+        auto arg_val = recurse(arg_exp);
+        auto fn_ptr = builder.CreateLoad(builder.CreateConstGEP2_32(wrapper_type, closure_ptr, 0, 0, "funptrptr"), "funptr");
+        return builder.CreateCall(fn_ptr, {arg_val, builder.CreatePointerCast(builder.CreateConstGEP2_32(wrapper_type, closure_ptr, 0, 1, "envptr"),
+                                                                              genericPointerType(ctx)->getPointerTo())});
       }
     }
+
+    case RECORD: {
+      auto values = get<RECORD>(expression) | boost::adaptors::transformed(recurse);
+      auto storage = createAllocation(module, builder, genericPointerType(ctx), values.size());
+      for (std::size_t i = 0; i < values.size(); ++i)
+        builder.CreateStore(values[i], builder.CreateConstGEP1_32(storage, i, "rcdvalptr"));
+      return builder.CreatePointerCast(storage, genericPointerType(ctx));
+    }
+
+    case SELECT: {
+      auto& [indices, record] = get<SELECT>(expression);
+      if (indices.size() != 1)
+        throw UnsupportedException{"Nested indexing"};
+      auto record_v = builder.CreatePointerCast(compile(module, builder, record, variables),
+                                                genericPointerType(ctx)->getPointerTo());
+      return builder.CreateLoad(builder.CreateConstGEP1_32(record_v, indices[0], "selectedptr"), "selected");
+    }
+
     case TFN:
-      return compile(module, builder, get<dlexp>(get<TFN>(expression)), variables);
+      return recurse(get<dlexp>(get<TFN>(expression)));
     case TAPP:
-      return compile(module, builder, get<dlexp>(get<TAPP>(expression)), variables);
+      return recurse(get<dlexp>(get<TAPP>(expression)));
 
     // Implement exceptions as terminations for now.
     case RAISE:
@@ -253,7 +303,7 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression, std
                          {});
       return nullptr;
     case HANDLE:
-      return compile(module, builder, get<0>(get<HANDLE>(expression)), variables);
+      return recurse(get<0>(get<HANDLE>(expression)));
 
     default:
       throw UnsupportedException{"compile: unsupported plambda type: " + std::to_string(expression.index())};
@@ -261,14 +311,12 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression, std
 }
 
 // The top-most compile function. It is passed the output of printing a lexp term in SML/NJ.
-void compile_top(SMLTranslationUnit const& unit,
-                 Module& module) {
+void compile_top(SMLTranslationUnit const& unit, Module& module) {
   auto& ctx = module.getContext();
 
   auto exportFn = Function::Create(FunctionType::get(ArrayType::get(genericPointerType(ctx),
                                                              unit.exportedDecls.size()),
-                                                    Type::getVoidTy(ctx),
-                                                    false),
+                                                    /* isVarArg = */false),
                             Function::ExternalLinkage, "export", &module);
 
   BasicBlock *BB = BasicBlock::Create(ctx, "entry", exportFn);
@@ -277,10 +325,9 @@ void compile_top(SMLTranslationUnit const& unit,
   for (auto& [val, exp] : unit.globalDecls) {
     auto p = compile(module, builder, exp, {});
     if (unit.exportedDecls.count(val))
-      values.push_back(p);
+      values.push_back(builder.CreatePointerCast(p, genericPointerType(ctx)));
   }
   builder.CreateAggregateRet(values.data(), values.size());
-
 }
 
 }

@@ -49,21 +49,26 @@ struct lexp : LABELLED_VARIANT(
   (PRIM, tuple<Primop::primop, lty, vector<tyc>>)
   (GENOP, tuple<dict, Primop::primop, lty, vector<tyc>>)
 
+  // 9-12:
   (FN, tuple<lvar, lty, dlexp>)
   (FIX, tuple<vector<tuple<lvar, lty, lexp>>, dlexp>)
   (APP, pair<dlexp, dlexp>)
   (LET, tuple<lvar, dlexp, dlexp>)
 
+  // 13-14:
   (TFN, pair<vector<tkind>, dlexp>)
   (TAPP, pair<dlexp, vector<tyc>>)
 
+  // 15-17:
   (RAISE, pair<dlexp, lty>)
   (HANDLE, pair<dlexp, dlexp>)
   (ETAG, pair<dlexp, lty>)
 
+  // 18-19:
   (CON, tuple<dataconstr, vector<tyc>, dlexp>)
   (SWITCH, tuple<dlexp, vector<pair<con, lexp>>, optional<dlexp>>)
 
+  // 20-23:
   (VECTOR, pair<vector<lexp>, tyc>)
   (RECORD, vector<lexp>)
   (SRECORD, vector<lexp>)

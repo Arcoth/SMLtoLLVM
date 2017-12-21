@@ -47,24 +47,32 @@
 			<Add option="-march=native" />
 			<Add option="-Wextra" />
 			<Add option="-ftemplate-backtrace-limit=0" />
-			<Add option="-stdlib=libc++" />
 			<Add option="-std=c++2a" />
+			<Add option="-stdlib=libc++" />
+			<Add option="-fno-sanitize-recover=undefined" />
 			<Add option="-D_LIBCPP_ENABLE_CXX17_REMOVED_BINDERS" />
 			<Add directory="/home/arcoth/PartIIProject/SMLtoLLVM/" />
 		</Compiler>
 		<Linker>
+			<Add option="`llvm-config --cxxflags --ldflags --system-libs --libs core mcjit engine native`" />
 			<Add option="-lc++ -lc++abi -lm -lc -lgcc_s -lgcc" />
-			<Add option="`llvm-config --cxxflags --ldflags --system-libs --libs core native`" />
 			<Add library="boost_system" />
 		</Linker>
 		<Unit filename="Compiler/basic.hpp" />
 		<Unit filename="Compiler/compile.cpp" />
 		<Unit filename="Compiler/compile.hpp" />
 		<Unit filename="GCPlugin/GC.cpp" />
+		<Unit filename="JIT/KaleidoscopeJIT.h" />
 		<Unit filename="Misc/LabelledVariant.hpp" />
 		<Unit filename="Misc/StringSwitchHash.hpp" />
 		<Unit filename="Misc/dynamic_wrapper.hpp" />
 		<Unit filename="Modules.hpp" />
+		<Unit filename="REPL.cpp">
+			<Option compiler="clang" use="1" buildCommand="$compiler $options -stdlib=libstdc++ $includes -c $file -o $object" />
+			<Option target="Debug" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="REPL.h" />
 		<Unit filename="SMLNJInterface/Absyn.hpp" />
 		<Unit filename="SMLNJInterface/AbsynInterfaceBasic.hpp" />
 		<Unit filename="SMLNJInterface/Lty.hpp" />
@@ -80,6 +88,7 @@
 		<Unit filename="SMLNJInterface/TypeParser.cpp" />
 		<Unit filename="SMLNJInterface/Types.hpp" />
 		<Unit filename="main.cpp">
+			<Option compiler="clang" use="0" buildCommand="$compiler $options std=c++14 $includes -c $file $object" />
 			<Option target="Debug" />
 			<Option target="Release" />
 		</Unit>

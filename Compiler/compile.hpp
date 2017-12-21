@@ -16,7 +16,7 @@ using namespace llvm;
 std::set<PLambda::lvar> freeVars( PLambda::lexp const& exp );
 
 inline auto genericPointerType(LLVMContext& c) {
-  return Type::getVoidTy(c)->getPointerTo();
+  return Type::getInt8PtrTy(c);
 }
 
 // The default function type of any function in the PLC.

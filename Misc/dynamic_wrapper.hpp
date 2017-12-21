@@ -35,6 +35,9 @@ public:
     return *this;
   }
 
+  T      * operator&()       {return _ptr.get();}
+  T const* operator&() const {return _ptr.get();}
+
         T& get()      & noexcept {assert(_ptr); return *_ptr;}
        T&& get()     && noexcept {assert(_ptr); return std::move(*_ptr);}
   T const& get() const& noexcept {assert(_ptr); return *_ptr;}
