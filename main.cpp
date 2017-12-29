@@ -3,6 +3,7 @@
 
 #include "REPL.h"
 
+#include <llvm/IR/Constants.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Support/TargetSelect.h>
 
@@ -10,61 +11,84 @@
 
 #include <iostream>
 
-namespace bp = boost::process;
+auto parseVerbosePlambda(std::istream& is) {
+  for (std::string line; std::getline(is, line) && line != "PLambda:";)
+    ;
 
-int main() try
+  SMLCompiler::PLambda::lexp e;
+  is >> e;
+  return e;
+}
+
+int main(int argc, char** argv) try
 {
+  if (argc < 2) {
+    std::cout << "Pass a file to compile.";
+    return EXIT_SUCCESS;
+  }
+
   using namespace SMLNJInterface;
+  using namespace SMLCompiler;
+  namespace bp = boost::process;
 
-  bp::ipstream pipe_stream;
-  bp::child sml("sml @SMLload=smlnj/base/system/sml Test.sml", bp::std_out > pipe_stream);
+  bp::ipstream output;
+  bp::opstream input;
+  bp::child sml("sml @SMLload=smlnj/base/system/sml " + std::string{argv[1]},
+                bp::std_out > output, bp::std_in < input);
+  std::istream stream(new Parser::log_input_buf(output.rdbuf(), std::cout));
 
-  std::string line, absyn;
-  for (bool ignore = true; pipe_stream && std::getline(pipe_stream, line);)
-    if (!ignore)
-      absyn = absyn + line + '\n';
-    else {
-      if (line == "PLambda:")
-        ignore = false;
-      std::cout << "> " << line << '\n';
-    }
-  sml.wait();
-
-  std::cout << absyn << std::endl;
-
-  std::istringstream stream(absyn);
-  PLambda::lexp plambda;
-  if (!(stream >> plambda)) {
+  // stream.exceptions(std::ios::failbit);
+  auto plambda = parseVerbosePlambda(stream);
+  if (!stream) {
     std::cerr << "Failed to parse the plambda expression!";
     return 0;
   }
 
-  using namespace SMLCompiler;
   using namespace llvm;
-
-  SMLTranslationUnit unit(plambda);
 
   LLVMContext context;
   auto module = std::make_unique<Module>("SML default module", context);
 
+  SMLTranslationUnit unit(plambda);
+  unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "::"}]
+    = {.type = symbol_rep::UNTAGGED, .value = ConstantInt::getTrue(context)};
+  unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "nil"}]
+    = {.type = symbol_rep::UNTAGGED, .value = ConstantInt::getFalse(context)};
+  unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "true"}]
+    = {.type = symbol_rep::CONSTANT, .value = ConstantInt::getTrue(context)};
+  unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "false"}]
+    = {.type = symbol_rep::CONSTANT, .value = ConstantInt::getFalse(context)};
+
   for (auto& [var, name] : unit.exportedDecls) {
-    auto s = Parser::parse_identifier(stream);
-    if (!stream) {
-      std::cerr << "Couldn't extract names of entities!";
-      return EXIT_FAILURE;
+    static auto skip_to = [&] (std::istream& s, char c) {
+      s.ignore(std::numeric_limits<std::streamsize>::max(), c);
+    };
+    for (;;) {
+      auto kind = Parser::parse_alnum_id(stream);
+      if (kind == "fun" || kind == "val")
+        break;
+      if (kind == "datatype") {
+        unsigned debruijn = 0;
+        skip_to(stream, '=');
+        std::string s; getline(stream, s);
+        stream.putback('\n');
+        for (std::istringstream ss(s);;) {
+          auto name = Parser::parse_symbol_id(ss);
+          if (!ss.good())
+            break;
+          unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, name}]
+            = {.type = symbol_rep::TAGGED, ConstantInt::get(genericIntType(*module), debruijn++)};
+          skip_to(ss, '|');
+        }
+      }
+      skip_to(stream, '\n');
     }
-    if (s == "fun" || s == "val")
-      name = Parser::parse_identifier(stream);
-    else if (s != "datatype") {
-      std::cerr << "Unrecognised entity kind: " << s;
-      return EXIT_FAILURE;
-    }
-    stream.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    name = Parser::parse_symbol_id(stream);
+    skip_to(stream, '\n');
   }
 
-  for (auto& [var, exp] : unit.globalDecls)
-    std::cout << var << ", freevars = " << freeVars(exp) << "\n";
   std::cout << "Exporting " << unit.exportedDecls << '\n';
+
 
   // Invoke the compiler.
   SMLCompiler::compile_top(unit, *module);
@@ -72,8 +96,10 @@ int main() try
   // Print out all of the generated code.
   module->print(outs(), nullptr);
 
-  if (!verifyModule(*module, &errs()))
+  if (verifyModule(*module, &errs())) {
+    errs() << "The code is ill-formed!";
     return EXIT_SUCCESS;
+  }
 
   return execute(module.release());
 } catch (SMLCompiler::CompileFailException const& e) {

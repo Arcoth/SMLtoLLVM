@@ -13,6 +13,7 @@
 #include <utility>
 #include <variant>
 #include <vector>
+#include <cxxabi.h>
 
 namespace SMLNJInterface {
 
@@ -32,6 +33,19 @@ using maxint = std::intmax_t; // replacement for InfInt.int
 template <std::size_t I, typename... Args>
 decltype(auto) emplace_by_value(std::variant<Args...>& v, std::variant_alternative_t<I, std::variant<Args...>> x) {
   return v.template emplace<I>(std::move(x));
+}
+
+template<typename T>
+string type_name()
+{
+    int status;
+    string tname = typeid(T).name();
+    char *demangled_name = abi::__cxa_demangle(tname.c_str(), NULL, NULL, &status);
+    if(status == 0) {
+        tname = demangled_name;
+        std::free(demangled_name);
+    }
+    return tname;
 }
 
 }

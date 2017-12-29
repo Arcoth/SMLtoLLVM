@@ -6,13 +6,30 @@
 
 #include <iomanip>
 #include <iostream>
-#include <string>
-#include <cxxabi.h>
+#include <regex>
 
 #define DEBUG_PRINT(...) std::cerr << __FILE__ << '/' << __LINE__ << ": " << __VA_ARGS__ << '\n';
 
 
 namespace SMLNJInterface::Parser {
+
+class log_input_buf : public std::streambuf {
+  std::streambuf* src;
+  std::ostream& out;
+  char ch;
+protected:
+  int_type underflow() {
+    ch = src->sbumpc();
+    out.put(ch);
+    setg(&ch, &ch, &ch+1);
+    return ch;
+  }
+public:
+  log_input_buf(std::streambuf* buf, std::ostream& out) : src(buf), out(out) {
+    setg(&ch, &ch+1, &ch+1);
+  }
+  auto source() {return src;}
+};
 
 inline bool starts_with(std::string_view a, std::string_view b) {
   return a.substr(0, b.length()) == b;
@@ -23,8 +40,8 @@ bool ends_with(T const& s, U u) {
 }
 
 template <typename Pred>
-std::string extract_cond(std::istream& is, Pred pred) {
-  std::string s;
+string extract_cond(std::istream& is, Pred pred) {
+  string s;
   is >> std::ws;
   int c;
   while ((c = is.get()) != EOF) {
@@ -37,22 +54,40 @@ std::string extract_cond(std::istream& is, Pred pred) {
   }
 
   if (c == EOF)
-    is.clear(is.rdstate() & ~std::ios::failbit);
+    is.clear(is.rdstate() & ~std::ios::failbit); // clear the failbit
 
   return s;
 }
 
-// yields a potentially empty string! Matches ([a-zA-z_][a-zA-z0-9_]*)?
-inline std::string parse_identifier(std::istream& is) {
-  return extract_cond(is, [] (auto& s, char c) {
-    return std::isalpha(c) || (std::isdigit(c) && !s.empty()) || c == '_';});
+namespace detail {
+  inline const std::regex alnum_regex("[[:alpha:]]\\w*");
+  inline const std::regex symbolic_regex(R"((!|%|&|$|#|\+|-|\/|:|<|=|>|\?|@|\\|~|`|^|\||\*)+)");
+  inline bool _alnum_cond(string const& s, char c) {
+    return std::regex_match(s+c, alnum_regex);
+  }
+  inline bool _symbol_cond(string const& s, char c) {
+    return _alnum_cond(s, c) or std::regex_match(s+c, symbolic_regex);
+  }
+}
+
+inline string parse_alnum_id(std::istream& is) {
+  return extract_cond(is, detail::_alnum_cond);
+}
+
+inline string parse_symbol_id(std::istream& is) {
+  return extract_cond(is, detail::_symbol_cond);
 }
 
 template <typename... T>
 std::istream& on_error(std::istream& is, T&&... t) {
+  std::cerr << "\n\n";
   (std::cerr << ... << std::forward<T>(t)) << '\n';
-  std::cerr << "Remaining buffer at position "<< is.tellg() <<": " << is.rdbuf() << '\n';
-  is.setstate(std::ios::failbit); // perform this after any logging, might throw
+  is.setstate(std::ios::failbit); // if this throws, it should throw before the potentially non-halting output below
+  std::cerr << "Remaining buffer at position "<< is.tellg() <<": \n\n";
+  if (auto ptr = dynamic_cast<log_input_buf*>(is.rdbuf()))
+    std::cerr << ptr->source();
+  else
+    std::cerr << is.rdbuf();
   return is;
 }
 
@@ -103,12 +138,14 @@ std::vector<T> parse_sequence(std::istream& is) {
   for(;;) {
     vec.emplace_back();
     char c;
-    is >> vec.back() >> c;
-    if (c != Sep) {
+    if (!(is >> vec.back() >> c))
+      on_error(is, "parse_sequence failed parsing ", type_name<T>());
+    else if (c != Sep) {
       if(c != Delim)
-        on_error(is, "parse_sequence interrupted by ", c);
-      break;
+        on_error(is, "parse_sequence interrupted by ", (int)c);
     }
+    else continue;
+    break;
   }
   return vec;
 }
@@ -140,19 +177,6 @@ inline unsigned parse_var(std::istream& is) {
   return i;
 }
 
-template<typename T>
-std::string type_name()
-{
-    int status;
-    std::string tname = typeid(T).name();
-    char *demangled_name = abi::__cxa_demangle(tname.c_str(), NULL, NULL, &status);
-    if(status == 0) {
-        tname = demangled_name;
-        std::free(demangled_name);
-    }
-    return tname;
-}
-
 template <typename T>
 struct var_tag{using type = T;}; // Used to signal to parse that the integer to extract is expressed as v[...].
 template <typename> constexpr bool is_var = false;
@@ -179,6 +203,10 @@ auto parse(std::istream& is, T t, Ts&&... ts) {
   }
   else if constexpr (std::is_convertible_v<T&, std::string_view>) {
     is >> string_{std::string_view{t}};
+    return rest();
+  }
+  else if constexpr (std::is_same_v<T, std::istream&(*)(std::istream&)>) {
+    is >> t;
     return rest();
   }
   else if constexpr (is_var<T>) {

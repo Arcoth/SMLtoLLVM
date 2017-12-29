@@ -15,7 +15,7 @@ using extract_type = typename decltype(f())::type;
 
 #define GET_TYPE_(...) BOOST_PP_IF(BOOST_PP_DEC(BOOST_PP_VARIADIC_SIZE(__VA_ARGS__)), BOOST_PP_TUPLE_POP_FRONT((__VA_ARGS__)), (std::monostate))
 // Need operator * applied to the lambda to decay it into a function pointer
-#define GET_TYPE(...) extract_type<*[] {[[maybe_unused]] typedef BOOST_PP_REMOVE_PARENS(GET_TYPE_(__VA_ARGS__)) _3495; return identity<_3495>{};}>
+#define GET_TYPE(...) extract_type<*[] {[[maybe_unused]] typedef BOOST_PP_REMOVE_PARENS(GET_TYPE_(__VA_ARGS__)) _3495; return ::identity<_3495>{};}>
 #define PROJ_1_(a, ...) a
 #define PROJ_1(a,b, pair) PROJ_1_ pair
 

@@ -81,4 +81,7 @@ struct lexp : LABELLED_VARIANT(
 
 std::istream& operator>>(std::istream& is, lexp& lexp);
 
+//! Specifies that the next lambda expression cannot be a selection.
+std::istream& no_select(std::istream& is);
+
 }

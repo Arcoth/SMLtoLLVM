@@ -47,12 +47,14 @@ std::istream& operator>>(std::istream& is, con& c) {
   return is;
 }
 
+static auto const no_select_xword_index = std::ios_base::xalloc();
+
 void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
   using namespace Parser;
   if (s.empty()) {
     char c = is.get();
     if (c == '(') {
-      auto s = parse_identifier(is);
+      auto s = parse_alnum_id(is);
       is >> char_<')'>;
            if (s == "W") parse_into<WORD>(exp, is, word{});
       else if (s == "W32") parse_into<WORD32>(exp, is, word32{});
@@ -131,6 +133,8 @@ void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
     is >> l >> char_<')'>;
     exp.emplace<TFN>(move(v), l);
   }
+  else if (s == "TAPP")
+    parse_into<TAPP>(exp, is, '(', no_select, lexp{}, vector<tyc>{}, ')');
   else if (starts_with(s, "SWI")) {
     lexp l;
     parse_lexp(is, s.substr(3), l);
@@ -151,15 +155,24 @@ void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
   else
     on_error(is, "lexp parser unknown symbol ", s);
 
-  is >> std::ws;
-  if (is.peek() == '[') {
-    auto v = parse_list<lvar>(is);
-    exp.emplace<SELECT>(move(v), dlexp{std::move(exp)});
+  if (not is.iword(no_select_xword_index)) {
+    is >> std::ws;
+    if (is.peek() == '[') {
+      auto v = parse_list<lvar>(is);
+      exp.emplace<SELECT>(move(v), dlexp{std::move(exp)});
+    }
   }
+  else
+    is.iword(no_select_xword_index) = false;
 }
 
 std::istream& operator>>(std::istream& is, lexp& lexp) {
-  parse_lexp(is, Parser::parse_identifier(is), lexp);
+  parse_lexp(is, Parser::parse_alnum_id(is), lexp);
+  return is;
+}
+
+std::istream& no_select(std::istream& is) {
+  is.iword(no_select_xword_index) = true;
   return is;
 }
 

@@ -33,8 +33,14 @@ Set set_union(Set s, C const& c) {
 }
 
 template <typename T, typename U>
+std::ostream& operator<<(std::ostream& os, std::tuple<T, U> const& p);
+template <typename T, typename U>
 std::ostream& operator<<(std::ostream& os, std::pair<T, U> const& p) {
   return os << p.first << " -> " << p.second;
+}
+template <typename T, typename U>
+std::ostream& operator<<(std::ostream& os, std::tuple<T, U> const& p) {
+  return os << std::get<0>(p) << " -> " << std::get<1>(p);
 }
 
 template <typename Range>

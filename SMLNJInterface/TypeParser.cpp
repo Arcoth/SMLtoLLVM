@@ -8,7 +8,7 @@ symbol parse_symbol(std::istream& is) {
   is >> std::ws;
   std::string s;
   getline(is, s, '$');
-  auto name = Parser::parse_identifier(is);
+  auto name = Parser::parse_symbol_id(is);
   switch(fnv(s)) {
     case "VAL"_fnv: return symbol{varInt, name};
     case "SIG"_fnv: return symbol{sigInt, name};
@@ -34,7 +34,7 @@ using namespace Parser;
 access parse_access(std::string_view name, std::istream& is);
 
 std::istream& operator>>(std::istream& is, access& a) {
-  a = parse_access(parse_identifier(is), is);
+  a = parse_access(parse_alnum_id(is), is);
   return is;
 }
 
@@ -60,7 +60,7 @@ access parse_access(std::string_view name, std::istream& is) {
 }
 
 std::istream& operator>>(std::istream& is, conrep& crep) {
-  auto id = parse_identifier(is);
+  auto id = parse_alnum_id(is);
   switch(fnv(id)) {
     case "UT"_fnv: crep.emplace<UNTAGGED>(); break;
     case "TG"_fnv: crep.emplace<TAGGED>(parenthesized<int>(is)); break;

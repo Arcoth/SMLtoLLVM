@@ -35,17 +35,13 @@ namespace SMLNJInterface::Lty
 
   std::istream& operator>>(std::istream& is, tkind& tk) {
     using namespace Parser;
-    auto s = parse_identifier(is);
+    auto s = parse_alnum_id(is);
     if (s == "M")
       tk.emplace<TK_MONO>();
     else if (s == "B")
       tk.emplace<TK_BOX>();
-    else if (s == "") {
-      auto vec = parse_sequence<tkind, '(', ',', '='>(is);
-      tkind t;
-      is >> char_<'>'> >> t;
-      tk.emplace<TK_FUN>(move(vec), move(t));
-    }
+    else if (s == "")
+      parse_into<TC_FN>(tk, is, '(', vector<tkind>{}, "=>", tkind{}, ')');
     else if (s == "KSEQ")
       tk.emplace<TK_SEQ>(parse_nonempty_sequence<tkind, ','>(is));
     else
@@ -55,14 +51,14 @@ namespace SMLNJInterface::Lty
 
   std::istream& operator>>(std::istream& is, tyc& t) {
     using namespace Parser;
-    auto s = parse_identifier(is);
+    auto s = parse_alnum_id(is);
     if (s == "TV")
       parse_into<TC_VAR>(t, is, '(', DebIndex::index{}, ',', int{}, ')');
     else if (s == "NTV")
       parse_into<TC_NVAR>(t, is, '(', var_tag<unsigned>{}, ')');
     else if (s == "PRIM") {
       is >> char_<'('>;
-      auto s = parse_identifier(is);
+      auto s = parse_alnum_id(is);
       t.emplace<TC_PRIM>(PrimTyc::primtyc_names.at(s));
       is >> char_<')'>;
     }
@@ -111,7 +107,7 @@ namespace SMLNJInterface::Lty
 
   std::istream& operator>>(std::istream& is, lty& l) {
     using namespace Parser;
-    auto s = parse_identifier(is);
+    auto s = parse_alnum_id(is);
     if (s == "TYC")
       parse_into<LT_TYC>(l, is, '(', tyc{}, ')');
     else if (s == "STR")

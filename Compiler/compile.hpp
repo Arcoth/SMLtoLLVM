@@ -4,6 +4,7 @@
 
 #include "SMLNJInterface/PLambda.hpp"
 
+#include <llvm/IR/Constants.h>
 #include <llvm/IR/Module.h>
 
 #include <set>
@@ -15,8 +16,15 @@ using namespace llvm;
 
 std::set<PLambda::lvar> freeVars( PLambda::lexp const& exp );
 
+using genericPointerTypeNative = char*;
+using genericFunctionTypeNative = genericPointerTypeNative(genericPointerTypeNative, genericPointerTypeNative[]);
+
 inline auto genericPointerType(LLVMContext& c) {
   return Type::getInt8PtrTy(c);
+}
+
+inline auto genericIntType(Module& m) {
+  return m.getDataLayout().getIntPtrType(m.getContext());
 }
 
 // The default function type of any function in the PLC.
@@ -27,22 +35,28 @@ inline auto genericFunctionType(LLVMContext& ctx) {
                            false); // not variadic
 }
 
+struct symbol_rep {
+  enum {
+    UNTAGGED, TAGGED, CONSTANT
+  } type;
+  ConstantInt* value;
+};
+
 class SMLTranslationUnit {
 public:
-  // OBtain the list of expressions in the chain of LET-expressions provided by
-  // SML/NJ's intermediate PLC language.
   SMLTranslationUnit(PLambda::lexp const&);
 
-  // All LET declarations enclosing the structure record contained in a PLC term denoting a program.
-  std::vector<std::pair<PLambda::lvar, PLambda::lexp>> globalDecls;
+  // The innermost closed let expression.
+  PLambda::lexp exportedLetExpr;
+
+  std::map<Symbol::symbol, symbol_rep> symbolRepresentation;
 
   // Includes both the lambda variable and the name of the entity it denotes.
   std::map<PLambda::lvar, std::string> exportedDecls;
 };
 
 // The top-most compile function. It is passed the output of printing a lexp term in SML/NJ.
-void compile_top(SMLTranslationUnit const& unit,
-                 Module& module);
+void compile_top(SMLTranslationUnit const& unit, Module& module);
 
 }
 
