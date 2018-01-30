@@ -2,57 +2,14 @@
 <CodeBlocks_layout_file>
 	<FileVersion major="1" minor="0" />
 	<ActiveTarget name="Debug" />
-	<File name="test.cpp" open="1" top="0" tabpos="4" split="0" active="1" splitpos="0" zoom_1="3" zoom_2="0">
+	<File name="SMLNJInterface/Lty.hpp" open="0" top="0" tabpos="16" split="0" active="1" splitpos="0" zoom_1="1" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="926" topLine="50" />
+		</Cursor>
+	</File>
+	<File name="test.cpp" open="1" top="0" tabpos="3" split="0" active="1" splitpos="0" zoom_1="3" zoom_2="0">
 		<Cursor>
 			<Cursor1 position="653" topLine="7" />
-		</Cursor>
-	</File>
-	<File name="SMLNJInterface/ParserUtilities.hpp" open="1" top="0" tabpos="10" split="0" active="1" splitpos="0" zoom_1="-1" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="399" topLine="0" />
-		</Cursor>
-	</File>
-	<File name="SMLNJInterface/PLambda.hpp" open="1" top="0" tabpos="12" split="0" active="1" splitpos="0" zoom_1="2" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="174" topLine="38" />
-		</Cursor>
-	</File>
-	<File name="Compiler/compile.cpp" open="1" top="0" tabpos="3" split="0" active="1" splitpos="0" zoom_1="1" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="5675" topLine="70" />
-		</Cursor>
-		<Folding>
-			<Collapse line="26" />
-		</Folding>
-	</File>
-	<File name="JIT/KaleidoscopeJIT.h" open="0" top="0" tabpos="1" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="2391" topLine="44" />
-		</Cursor>
-	</File>
-	<File name="REPL.h" open="1" top="0" tabpos="5" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="53" topLine="0" />
-		</Cursor>
-	</File>
-	<File name="SMLNJInterface/PrimopParser.cpp" open="0" top="0" tabpos="10" split="0" active="1" splitpos="0" zoom_1="1" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="801" topLine="27" />
-		</Cursor>
-	</File>
-	<File name="Modules.hpp" open="0" top="0" tabpos="8" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="649" topLine="0" />
-		</Cursor>
-	</File>
-	<File name="Misc/dynamic_wrapper.hpp" open="1" top="0" tabpos="6" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="1469" topLine="4" />
-		</Cursor>
-	</File>
-	<File name="SMLNJInterface/LtyParser.cpp" open="0" top="0" tabpos="9" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="3139" topLine="65" />
 		</Cursor>
 	</File>
 	<File name="SMLNJInterface/TypeParser.cpp" open="0" top="0" tabpos="9" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
@@ -60,65 +17,113 @@
 			<Cursor1 position="224" topLine="0" />
 		</Cursor>
 	</File>
+	<File name="REPL.cpp" open="1" top="1" tabpos="17" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="0" topLine="0" />
+		</Cursor>
+	</File>
+	<File name="Misc/LabelledVariant.hpp" open="1" top="0" tabpos="15" split="0" active="1" splitpos="0" zoom_1="-2" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="605" topLine="0" />
+		</Cursor>
+	</File>
+	<File name="REPL.h" open="1" top="0" tabpos="4" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="53" topLine="0" />
+		</Cursor>
+	</File>
+	<File name="GCPlugin/GC.cpp" open="1" top="0" tabpos="16" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="0" topLine="0" />
+		</Cursor>
+	</File>
+	<File name="Misc/dynamic_wrapper.hpp" open="1" top="0" tabpos="5" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="1469" topLine="4" />
+		</Cursor>
+	</File>
+	<File name="SMLNJInterface/ParserUtilities.hpp" open="1" top="0" tabpos="10" split="0" active="1" splitpos="0" zoom_1="-1" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="1934" topLine="39" />
+		</Cursor>
+	</File>
+	<File name="SMLNJInterface/PLambda.hpp" open="1" top="0" tabpos="11" split="0" active="1" splitpos="0" zoom_1="2" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="174" topLine="7" />
+		</Cursor>
+	</File>
+	<File name="JIT/KaleidoscopeJIT.h" open="0" top="0" tabpos="1" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="2391" topLine="44" />
+		</Cursor>
+	</File>
+	<File name="Compiler/basic.hpp" open="1" top="0" tabpos="6" split="0" active="1" splitpos="0" zoom_1="6" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="967" topLine="2" />
+		</Cursor>
+	</File>
+	<File name="SMLNJInterface/PLambdaParser.cpp" open="1" top="0" tabpos="8" split="0" active="1" splitpos="0" zoom_1="1" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="5041" topLine="123" />
+		</Cursor>
+	</File>
+	<File name="SMLNJInterface/AbsynInterfaceBasic.hpp" open="1" top="0" tabpos="7" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="141" topLine="0" />
+		</Cursor>
+	</File>
 	<File name="SMLNJInterface/Types.hpp" open="0" top="0" tabpos="17" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
 		<Cursor>
 			<Cursor1 position="1830" topLine="24" />
 		</Cursor>
 	</File>
-	<File name="SMLNJInterface/PLambdaParser.cpp" open="1" top="0" tabpos="9" split="0" active="1" splitpos="0" zoom_1="1" zoom_2="0">
+	<File name="Compiler/compile.hpp" open="1" top="0" tabpos="14" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
 		<Cursor>
-			<Cursor1 position="5041" topLine="128" />
+			<Cursor1 position="590" topLine="0" />
 		</Cursor>
 	</File>
-	<File name="REPL.cpp" open="1" top="1" tabpos="11" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
+	<File name="SMLNJInterface/Primop.hpp" open="1" top="0" tabpos="12" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
 		<Cursor>
-			<Cursor1 position="1022" topLine="0" />
+			<Cursor1 position="3840" topLine="121" />
 		</Cursor>
 	</File>
-	<File name="SMLNJInterface/Lty.hpp" open="0" top="0" tabpos="16" split="0" active="1" splitpos="0" zoom_1="1" zoom_2="0">
+	<File name="SMLNJInterface/LtyParser.cpp" open="0" top="0" tabpos="9" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
 		<Cursor>
-			<Cursor1 position="926" topLine="50" />
+			<Cursor1 position="3139" topLine="65" />
 		</Cursor>
 	</File>
-	<File name="main.cpp" open="1" top="0" tabpos="1" split="0" active="1" splitpos="0" zoom_1="2" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="1765" topLine="46" />
-		</Cursor>
-	</File>
-	<File name="SMLNJInterface/Primop.hpp" open="1" top="0" tabpos="13" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="260" topLine="8" />
-		</Cursor>
-	</File>
-	<File name="GCPlugin/GC.cpp" open="1" top="0" tabpos="2" split="0" active="1" splitpos="0" zoom_1="5" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="267" topLine="0" />
-		</Cursor>
-	</File>
-	<File name="Compiler/compile.hpp" open="1" top="0" tabpos="15" split="0" active="1" splitpos="0" zoom_1="-3" zoom_2="0">
-		<Cursor>
-			<Cursor1 position="1332" topLine="0" />
-		</Cursor>
-	</File>
-	<File name="SMLNJInterface/Symbol.hpp" open="1" top="0" tabpos="14" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
+	<File name="SMLNJInterface/Symbol.hpp" open="1" top="0" tabpos="13" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
 		<Cursor>
 			<Cursor1 position="291" topLine="0" />
 		</Cursor>
 	</File>
-	<File name="Misc/LabelledVariant.hpp" open="1" top="0" tabpos="16" split="0" active="1" splitpos="0" zoom_1="-2" zoom_2="0">
+	<File name="SMLNJInterface/PrimopParser.cpp" open="1" top="0" tabpos="9" split="0" active="1" splitpos="0" zoom_1="1" zoom_2="0">
 		<Cursor>
-			<Cursor1 position="605" topLine="0" />
+			<Cursor1 position="2113" topLine="33" />
 		</Cursor>
 	</File>
-	<File name="SMLNJInterface/AbsynInterfaceBasic.hpp" open="1" top="0" tabpos="8" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
+	<File name="main.cpp" open="1" top="0" tabpos="1" split="0" active="1" splitpos="0" zoom_1="2" zoom_2="0">
 		<Cursor>
-			<Cursor1 position="141" topLine="0" />
+			<Cursor1 position="3084" topLine="66" />
 		</Cursor>
 	</File>
-	<File name="Compiler/basic.hpp" open="1" top="0" tabpos="7" split="0" active="1" splitpos="0" zoom_1="6" zoom_2="0">
+	<File name="Compiler/compile.cpp" open="1" top="0" tabpos="2" split="0" active="1" splitpos="0" zoom_1="-2" zoom_2="0">
 		<Cursor>
-			<Cursor1 position="967" topLine="2" />
+			<Cursor1 position="11683" topLine="206" />
+		</Cursor>
+		<Folding>
+			<Collapse line="26" />
+		</Folding>
+	</File>
+	<File name="Modules.hpp" open="0" top="0" tabpos="8" split="0" active="1" splitpos="0" zoom_1="0" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="649" topLine="0" />
 		</Cursor>
 	</File>
-	<EditorTabsLayout layout="f1226f505a461dc10019ca3b00000002=0;SMLToLLVM:main.cpp,1;SMLToLLVM:GCPlugin/GC.cpp,+2;SMLToLLVM:Compiler/compile.cpp,3;SMLToLLVM:test.cpp,4;SMLToLLVM:REPL.h,5;SMLToLLVM:Misc/dynamic_wrapper.hpp,6;SMLToLLVM:Compiler/basic.hpp,7;SMLToLLVM:SMLNJInterface/AbsynInterfaceBasic.hpp,8;SMLToLLVM:SMLNJInterface/PLambdaParser.cpp|f22141005a461dc10019cef900000003=9;SMLToLLVM:SMLNJInterface/ParserUtilities.hpp,*10;SMLToLLVM:REPL.cpp,11;SMLToLLVM:SMLNJInterface/PLambda.hpp,12;SMLToLLVM:SMLNJInterface/Primop.hpp,13;SMLToLLVM:SMLNJInterface/Symbol.hpp,14;SMLToLLVM:Compiler/compile.hpp,15;SMLToLLVM:Misc/LabelledVariant.hpp@layout2|name=dummy;caption=;state=2098174;dir=3;layer=0;row=0;pos=0;prop=100000;bestw=180;besth=180;minw=180;minh=180;maxw=-1;maxh=-1;floatx=-1;floaty=-1;floatw=-1;floath=-1|name=f1226f505a461dc10019ca3b00000002;caption=;state=2098172;dir=5;layer=0;row=0;pos=0;prop=100000;bestw=200;besth=200;minw=-1;minh=-1;maxw=-1;maxh=-1;floatx=-1;floaty=-1;floatw=-1;floath=-1|name=f22141005a461dc10019cef900000003;caption=;state=2098172;dir=2;layer=1;row=0;pos=0;prop=100000;bestw=1719;besth=960;minw=-1;minh=-1;maxw=-1;maxh=-1;floatx=-1;floaty=-1;floatw=-1;floath=-1|dock_size(5,0,0)=202|dock_size(2,1,0)=1662|" />
+	<File name="GCPlugin/GCStrategy.cpp" open="0" top="0" tabpos="2" split="0" active="1" splitpos="0" zoom_1="5" zoom_2="0">
+		<Cursor>
+			<Cursor1 position="275" topLine="0" />
+		</Cursor>
+	</File>
+	<EditorTabsLayout layout="6f03a2105a7051d6001a25df00000002=0;SMLToLLVM:main.cpp,+1;SMLToLLVM:Compiler/compile.cpp,2;SMLToLLVM:test.cpp,3;SMLToLLVM:REPL.h,4;SMLToLLVM:Misc/dynamic_wrapper.hpp,5;SMLToLLVM:Compiler/basic.hpp,6;SMLToLLVM:SMLNJInterface/AbsynInterfaceBasic.hpp,7;SMLToLLVM:SMLNJInterface/PLambdaParser.cpp,8;SMLToLLVM:SMLNJInterface/PrimopParser.cpp|6f00d1405a7051d6001a2b3a00000003=9;SMLToLLVM:SMLNJInterface/ParserUtilities.hpp,10;SMLToLLVM:SMLNJInterface/PLambda.hpp,11;SMLToLLVM:SMLNJInterface/Primop.hpp,12;SMLToLLVM:SMLNJInterface/Symbol.hpp,13;SMLToLLVM:Compiler/compile.hpp,14;SMLToLLVM:Misc/LabelledVariant.hpp,15;SMLToLLVM:GCPlugin/GC.cpp,*16;SMLToLLVM:REPL.cpp@layout2|name=dummy;caption=;state=2098174;dir=3;layer=0;row=0;pos=0;prop=100000;bestw=180;besth=180;minw=180;minh=180;maxw=-1;maxh=-1;floatx=-1;floaty=-1;floatw=-1;floath=-1|name=6f03a2105a7051d6001a25df00000002;caption=;state=2098172;dir=5;layer=0;row=0;pos=0;prop=100000;bestw=200;besth=200;minw=-1;minh=-1;maxw=-1;maxh=-1;floatx=-1;floaty=-1;floatw=-1;floath=-1|name=6f00d1405a7051d6001a2b3a00000003;caption=;state=2098172;dir=2;layer=1;row=0;pos=0;prop=100000;bestw=1719;besth=960;minw=-1;minh=-1;maxw=-1;maxh=-1;floatx=-1;floaty=-1;floatw=-1;floath=-1|dock_size(5,0,0)=202|dock_size(2,1,0)=1860|" />
 </CodeBlocks_layout_file>

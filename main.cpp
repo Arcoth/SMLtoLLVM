@@ -54,6 +54,7 @@ int main(int argc, char** argv) try
     = {.type = symbol_rep::UNTAGGED, .value = ConstantInt::getTrue(context)};
   unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "nil"}]
     = {.type = symbol_rep::UNTAGGED, .value = ConstantInt::getFalse(context)};
+
   unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "true"}]
     = {.type = symbol_rep::CONSTANT, .value = ConstantInt::getTrue(context)};
   unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "false"}]
@@ -74,10 +75,11 @@ int main(int argc, char** argv) try
         stream.putback('\n');
         for (std::istringstream ss(s);;) {
           auto name = Parser::parse_symbol_id(ss);
-          if (!ss.good())
+          if (!ss)
             break;
           unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, name}]
             = {.type = symbol_rep::TAGGED, ConstantInt::get(genericIntType(*module), debruijn++)};
+          std::cout << "New constructor: " << name << '\n';
           skip_to(ss, '|');
         }
       }
@@ -92,6 +94,8 @@ int main(int argc, char** argv) try
 
   // Invoke the compiler.
   SMLCompiler::compile_top(unit, *module);
+
+  SMLCompiler::performPasses(*module);
 
   // Print out all of the generated code.
   module->print(outs(), nullptr);

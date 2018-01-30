@@ -75,6 +75,12 @@ std::istream& operator>>(std::istream& is, primop& op) {
   }
   else if (s == "markexn")
     op.emplace<MARKEXN>();
+  else if (s == "!")
+    op.emplace<DEREF>();
+  else if (s == ":=")
+    op.emplace<ASSIGN>();
+  else if (s == "makeref")
+    op.emplace<MAKEREF>();
   else
     on_error(is, "Invalid primop prefix: ", s);
   return is;

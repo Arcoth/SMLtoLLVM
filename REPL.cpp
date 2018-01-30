@@ -6,13 +6,64 @@
 #include <llvm/ExecutionEngine/MCJIT.h>
 #include <llvm/ExecutionEngine/ExecutionEngine.h>
 
+#include <llvm/Support/DynamicLibrary.h>
 #include <llvm/Support/TargetSelect.h>
+
+#include <llvm/IR/Function.h>
+#include <llvm/IR/IRBuilder.h>
+
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/Transforms/Scalar.h>
+#include <llvm/Transforms/Scalar/GVN.h>
 
 #include <iostream>
 
 namespace SMLCompiler {
 
 using namespace llvm;
+
+void performPasses(Module& mod) {
+  auto& ctx = mod.getContext();
+
+  // Create a new pass manager attached to it.
+  legacy::FunctionPassManager fpm(&mod);
+
+  // Do simple "peephole" optimizations and bit-twiddling optzns.
+  fpm.add(createInstructionCombiningPass());
+  // Reassociate expressions.
+  fpm.add(createReassociatePass());
+  // Eliminate Common SubExpressions.
+  fpm.add(createGVNPass());
+  // Simplify the control flow graph (deleting unreachable blocks, etc).
+  fpm.add(createCFGSimplificationPass());
+
+  // Add a preliminary safepoint poller
+  auto safepoint_poll =
+    Function::Create(FunctionType::get(Type::getVoidTy(ctx), false),
+                     GlobalValue::ExternalLinkage,
+                     "gc.safepoint_poll",
+                     &mod);
+
+  IRBuilder<> safepoint_builder(BasicBlock::Create(ctx, "entry", safepoint_poll));
+  safepoint_builder.CreateRetVoid();
+
+  // Statepoints passes
+  fpm.add(createPlaceSafepointsPass());
+
+  fpm.doInitialization();
+
+  for (auto& fun : mod) {
+    if (fun.getName() == "gc.safepoint_poll")
+      continue;
+    fun.setGC("statepoint-example");
+    outs() << "Performing optimisation and GC passes on " << fun.getName() << '\n';
+    fpm.run(fun);
+  }
+
+  legacy::PassManager pm;
+  pm.add(createRewriteStatepointsForGCPass());
+  pm.run(mod);
+}
 
 int execute(Module* mod) {
   InitializeNativeTarget();
@@ -36,7 +87,18 @@ int execute(Module* mod) {
 //    auto exp = parseVerbosePlambda(in);
 //
 //
-//  }
+//
+
+  sys::DynamicLibrary gclib = sys::DynamicLibrary::getPermanentLibrary("SMLtoLLVM/libSML_GC.so", &err_str);
+  if (!gclib.isValid()){
+    errs() << "Could not GC library: " << err_str;
+    return EXIT_FAILURE;
+  }
+  auto sym = gclib.getAddressOfSymbol("_Z8allocatem");
+  if (!sym) {
+    errs() << "Couldn't find allocator!";
+    return EXIT_FAILURE;
+  }
 
   auto fce_ptr = (genericPointerTypeNative*(*)())EE->getFunctionAddress("export");
   auto lambda = fce_ptr();

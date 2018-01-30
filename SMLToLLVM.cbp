@@ -5,6 +5,7 @@
 		<Option title="SMLToLLVM" />
 		<Option execution_dir="/home/arcoth/PartIIProject/CoreToLLVM/" />
 		<Option pch_mode="2" />
+		<Option default_target="Debug" />
 		<Option compiler="clang" />
 		<Build>
 			<Target title="Debug">
@@ -43,7 +44,17 @@
 					<Add option="-s" />
 				</Linker>
 			</Target>
+			<Target title="GC Library">
+				<Option output="SML_GC" prefix_auto="1" extension_auto="1" />
+				<Option type="3" />
+				<Option compiler="clang" />
+				<Option createDefFile="1" />
+				<Option createStaticLib="1" />
+			</Target>
 		</Build>
+		<VirtualTargets>
+			<Add alias="Debug + GC" targets="Debug;GC Library;" />
+		</VirtualTargets>
 		<Compiler>
 			<Add option="-O2" />
 			<Add option="-Wall" />
@@ -52,44 +63,144 @@
 			<Add option="-ftemplate-backtrace-limit=0" />
 			<Add option="-std=c++2a" />
 			<Add option="-stdlib=libc++" />
+			<Add option="-DLLVM_ENABLE_ABI_BREAKING_CHECKS=0" />
 			<Add option="-D_LIBCPP_ENABLE_CXX17_REMOVED_BINDERS" />
 			<Add directory="/home/arcoth/PartIIProject/SMLtoLLVM/" />
 		</Compiler>
 		<Linker>
-			<Add option="`llvm-config --cxxflags --ldflags --system-libs --libs core mcjit engine native`" />
-			<Add option="-lc++ -lc++abi -lm -lc -lgcc_s -lgcc" />
+			<Add option="`llvm-config --ldflags --system-libs --libs mcjit engine native core`" />
+			<Add option="-lc++ -lc++abi -lm -lc -lgcc_s -lgcc -lpthread" />
 			<Add library="boost_system" />
 			<Add library="boost_filesystem" />
 		</Linker>
-		<Unit filename="Compiler/basic.hpp" />
-		<Unit filename="Compiler/compile.cpp" />
-		<Unit filename="Compiler/compile.hpp" />
-		<Unit filename="GCPlugin/GC.cpp" />
-		<Unit filename="JIT/KaleidoscopeJIT.h" />
-		<Unit filename="Misc/LabelledVariant.hpp" />
-		<Unit filename="Misc/StringSwitchHash.hpp" />
-		<Unit filename="Misc/dynamic_wrapper.hpp" />
-		<Unit filename="Modules.hpp" />
+		<Unit filename="Compiler/basic.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="Compiler/compile.cpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="Compiler/compile.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="GCPlugin/GC.cpp">
+			<Option target="GC Library" />
+		</Unit>
+		<Unit filename="GCPlugin/GCStrategy.cpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="JIT/KaleidoscopeJIT.h">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="Misc/LabelledVariant.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="Misc/StringSwitchHash.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="Misc/dynamic_wrapper.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="Modules.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
 		<Unit filename="REPL.cpp">
-			<Option compiler="clang" use="1" buildCommand="$compiler $options -stdlib=libstdc++ $includes -c $file -o $object" />
+			<Option compiler="clang" use="1" buildCommand="$compiler $options -stdlib=libstdc++ $includes -c $file -o $object " />
 			<Option target="Debug" />
 			<Option target="Release" />
 		</Unit>
-		<Unit filename="REPL.h" />
-		<Unit filename="SMLNJInterface/Absyn.hpp" />
-		<Unit filename="SMLNJInterface/AbsynInterfaceBasic.hpp" />
-		<Unit filename="SMLNJInterface/Lty.hpp" />
-		<Unit filename="SMLNJInterface/LtyParser.cpp" />
-		<Unit filename="SMLNJInterface/PLambda.hpp" />
-		<Unit filename="SMLNJInterface/PLambdaParser.cpp" />
-		<Unit filename="SMLNJInterface/ParserUtilities.hpp" />
-		<Unit filename="SMLNJInterface/Primop.hpp" />
-		<Unit filename="SMLNJInterface/PrimopParser.cpp" />
-		<Unit filename="SMLNJInterface/PropList.hpp" />
-		<Unit filename="SMLNJInterface/Stamps.hpp" />
-		<Unit filename="SMLNJInterface/Symbol.hpp" />
-		<Unit filename="SMLNJInterface/TypeParser.cpp" />
-		<Unit filename="SMLNJInterface/Types.hpp" />
+		<Unit filename="REPL.h">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/Absyn.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/AbsynInterfaceBasic.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/Lty.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/LtyParser.cpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/PLambda.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/PLambdaParser.cpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/ParserUtilities.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/Primop.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/PrimopParser.cpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/PropList.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/Stamps.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/Symbol.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/TypeParser.cpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="SMLNJInterface/Types.hpp">
+			<Option target="Debug" />
+			<Option target="Test main" />
+			<Option target="Release" />
+		</Unit>
 		<Unit filename="main.cpp">
 			<Option compiler="clang" use="0" buildCommand="$compiler $options std=c++14 $includes -c $file $object" />
 			<Option target="Debug" />

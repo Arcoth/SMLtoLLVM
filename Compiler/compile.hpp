@@ -16,22 +16,30 @@ using namespace llvm;
 
 std::set<PLambda::lvar> freeVars( PLambda::lexp const& exp );
 
+inline const int heapAddressSpace = 1;
+
 using genericPointerTypeNative = char*;
+using genericIntTypeNative = std::intptr_t;
 using genericFunctionTypeNative = genericPointerTypeNative(genericPointerTypeNative, genericPointerTypeNative[]);
 
 inline auto genericPointerType(LLVMContext& c) {
-  return Type::getInt8PtrTy(c);
+  return PointerType::get(Type::getInt8Ty(c), heapAddressSpace);
 }
 
 inline auto genericIntType(Module& m) {
   return m.getDataLayout().getIntPtrType(m.getContext());
 }
 
+// This is one half of an entire data tag, so has half the width of a machine word.
+inline auto tagType(Module& m) {
+  return IntegerType::get(m.getContext(), genericIntType(m)->getBitWidth()/2) ;
+}
+
 // The default function type of any function in the PLC.
 inline auto genericFunctionType(LLVMContext& ctx) {
   return FunctionType::get(genericPointerType(ctx),   // the return value
                            {genericPointerType(ctx),  // the argument
-                            genericPointerType(ctx)->getPointerTo()}, // the environment (if needed).
+                            genericPointerType(ctx)->getPointerTo(1)}, // the environment (if needed).
                            false); // not variadic
 }
 

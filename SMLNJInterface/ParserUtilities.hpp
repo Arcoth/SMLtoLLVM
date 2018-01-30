@@ -75,7 +75,10 @@ inline string parse_alnum_id(std::istream& is) {
 }
 
 inline string parse_symbol_id(std::istream& is) {
-  return extract_cond(is, detail::_symbol_cond);
+  auto s = extract_cond(is, detail::_symbol_cond);
+  if (s.empty())
+    is.setstate(std::ios::failbit);
+  return s;
 }
 
 template <typename... T>
