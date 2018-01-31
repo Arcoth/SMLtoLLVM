@@ -16,7 +16,10 @@
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Scalar/GVN.h>
 
+#include <llvm/ExecutionEngine/SectionMemoryManager.h>
+
 #include <iostream>
+#include <new>
 
 namespace SMLCompiler {
 
@@ -65,13 +68,34 @@ void performPasses(Module& mod) {
   pm.run(mod);
 }
 
+class MemManager : public SectionMemoryManager {
+  void* _stackmap;
+
+public:
+  auto stackMap() const {return _stackmap;}
+
+  uint8_t* allocateDataSection(uintptr_t Size, unsigned Alignment, unsigned SectionID, StringRef SectionName,
+                               bool readOnly) override {
+    outs() << "Allocating " << Size << " bytes for " << SectionName << '\n';
+    auto p = SectionMemoryManager::allocateDataSection(Size, Alignment, SectionID, SectionName, readOnly);
+    if (SectionName == ".llvm_stackmaps")
+      _stackmap = p;
+    return p;
+  }
+};
+
 int execute(Module* mod) {
   InitializeNativeTarget();
   LLVMInitializeNativeAsmPrinter();
   LLVMInitializeNativeAsmParser();
 
+  auto memManagerUptr = std::make_unique<MemManager>();
+  auto memManager = memManagerUptr.get();
   std::string err_str;
-  auto EE = EngineBuilder{std::unique_ptr<Module>{mod}}.setErrorStr(&err_str).create();
+  auto EE = EngineBuilder{std::unique_ptr<Module>{mod}}
+              .setErrorStr(&err_str)
+              .setMemoryManager(move(memManagerUptr))
+              .create();
   if (!EE) {
     errs() << "Could not create execution engine: " << err_str;
     return EXIT_FAILURE;
@@ -91,7 +115,7 @@ int execute(Module* mod) {
 
   sys::DynamicLibrary gclib = sys::DynamicLibrary::getPermanentLibrary("SMLtoLLVM/libSML_GC.so", &err_str);
   if (!gclib.isValid()){
-    errs() << "Could not GC library: " << err_str;
+    errs() << "Could not load GC library: " << err_str;
     return EXIT_FAILURE;
   }
   auto sym = gclib.getAddressOfSymbol("_Z8allocatem");
@@ -99,6 +123,10 @@ int execute(Module* mod) {
     errs() << "Couldn't find allocator!";
     return EXIT_FAILURE;
   }
+
+  EE->generateCodeForModule(mod);
+  assert(memManager->stackMap());
+  *(void**)gclib.getAddressOfSymbol("StackMapPtr") = memManager->stackMap();
 
   auto fce_ptr = (genericPointerTypeNative*(*)())EE->getFunctionAddress("export");
   auto lambda = fce_ptr();
