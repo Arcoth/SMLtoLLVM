@@ -137,32 +137,46 @@ SMLTranslationUnit::SMLTranslationUnit(lexp const& exp) {
   }
 }
 
-// For now, we will employ malloc.
 Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type, std::size_t n = 1) {
   static const auto size_type = genericIntType(module);
-  static const auto malloc_ptr
-    = cast<Function>(module.getOrInsertFunction("_Z8allocatem",
-                                 FunctionType::get(Type::getInt8Ty(module.getContext())->getPointerTo(heapAddressSpace),
-                                                   {size_type}, false)));
-  auto ptr = builder.CreateCall(malloc_ptr, ConstantInt::get(size_type, n * DataLayout{&module}.getTypeAllocSize(type)), "storage");
+  auto alloc_fun = module.getFunction(allocationFunctionName);
+  if (!alloc_fun)
+    throw CompileFailException{"Allocation function not found!"};
+
+  auto ptr = builder.CreateCall(alloc_fun, ConstantInt::get(size_type, n * DataLayout{&module}.getTypeAllocSize(type)), "storage");
   return builder.CreatePointerCast(ptr, type->getPointerTo(heapAddressSpace), "allocatedobj");
 }
 
-Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression, std::map<PLambda::lvar, Value*> const& variables, SMLTranslationUnit const&);
+Value* boxInt(IRBuilder<>& builder, Value* x) {
+  auto& module = *builder.GetInsertBlock()->getModule();
+  return builder.CreateIntToPtr(builder.CreateAdd(builder.CreateShl(x, 1, "shifted_int"), ConstantInt::get(x->getType(), 1), "boxed_int"),
+                                genericPointerType(module.getContext()), "int_to_ptr");
+}
+
+// expects a value of generic pointer tpye,
+Value* unboxInt(IRBuilder<>& builder, Value* x) {
+  return builder.CreatePtrToInt(builder.CreateAShr(x, 1, "unboxed_int"), genericIntType(*builder.GetInsertBlock()->getModule()),
+                                "ptr_to_int");
+}
+
+Value* compile(IRBuilder<>& builder, lexp const& expression, std::map<PLambda::lvar, Value*> const& variables, SMLTranslationUnit const&);
 
 // Here, exp is a RCD of one or two arguments to the operator.
-Value* compile_primop(Module& module, IRBuilder<>& builder,
-                      Primop::primop const& op, lexp const& exp,
-                      std::map<PLambda::lvar, Value*> const& variables, SMLTranslationUnit const& unit) {
+Value* compile_primop(IRBuilder<>& builder,
+                      Primop::primop const& op,
+                      lexp const& exp,
+                      std::map<PLambda::lvar, Value*> const& variables,
+                      SMLTranslationUnit const& unit) {
   using namespace Primop;
+  auto& module = *builder.GetInsertBlock()->getModule();
 
   boost::container::static_vector<std::function<Value*()>, 5> arg_values;
   std::function<Value*()> arg_value;
   if (auto rcd = get_if<RECORD>(&exp))
     for (auto& e : *rcd)
-      arg_values.push_back([&] {return compile(module, builder, e, variables, unit);});
+      arg_values.push_back([&] {return compile(builder, e, variables, unit);});
   else {
-    auto v = compile(module, builder, exp, variables, unit);
+    auto v = compile(builder, exp, variables, unit);
     auto v_ptr = builder.CreatePointerCast(v, genericPointerType(module.getContext())->getPointerTo(heapAddressSpace));
     arg_value = [v] {return v;};
     for (int i = 0; i < 3; ++i)
@@ -171,7 +185,7 @@ Value* compile_primop(Module& module, IRBuilder<>& builder,
 
   auto unbox_args = [&] {
     for (auto& val : arg_values)
-      val = [&, val] {return builder.CreatePtrToInt(val(), genericIntType(module));};
+      val = [&builder, val] {return unboxInt(builder, val());};
   };
 
   auto assert_arity = [] (auto& container, std::size_t expected) {
@@ -246,7 +260,7 @@ Value* compile_primop(Module& module, IRBuilder<>& builder,
     default:
       throw UnsupportedException{"primop " + std::to_string(op.index())};
   }
-  return builder.CreateIntToPtr(result, genericPointerType(module.getContext()));
+  return boxInt(builder, result);
 }
 
 template <typename Rng>
@@ -276,11 +290,11 @@ Value* extractTag(Module& module, IRBuilder<>& builder, SMLTranslationUnit const
         case symbol_rep::TAGGED:
           return builder.CreateLoad(builder.CreatePointerCast(exp_v, tagType(module)->getPointerTo(heapAddressSpace)));
         case symbol_rep::CONSTANT:
-          return builder.CreatePtrToInt(exp_v, rep.value->getType());
+          return unboxInt(builder, exp_v);
       }
     }
     case INTcon: case INT32con:
-      return builder.CreatePtrToInt(exp_v, genericIntType(module));
+      return unboxInt(builder, exp_v);
     default:
       throw UnsupportedException{"constructor " + std::to_string(constr.index())};
   }
@@ -305,23 +319,20 @@ ConstantInt* getTag(Module& module, SMLTranslationUnit const& unit, con const& c
   return ConstantInt::get(genericIntType(module), value);
 }
 
-void insertAbort(Module& module, IRBuilder<>& builder) {
+void insertAbort(IRBuilder<>& builder) {
+  auto& module = *builder.GetInsertBlock()->getModule();
   builder.CreateCall(module.getOrInsertFunction("abort",
                            FunctionType::get(Type::getVoidTy(module.getContext()), false)),
                      {});
   builder.CreateUnreachable();
 }
 
-//Value* boxInt(genericIntTypeNative i) {
-//  if (i < 0) //
-//  return builder.CreateIntToPtr(ConstantInt::getSigned(genericIntType(module), i), genericPointerType(ctx), "inttoptr");
-//}
-
-Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression,
+Value* compile(IRBuilder<>& builder, lexp const& expression,
                std::map<PLambda::lvar, Value*> const& variables, SMLTranslationUnit const& unit) {
+  auto& module = *builder.GetInsertBlock()->getModule();
   auto& ctx = module.getContext();
   auto recurse = [&] (lexp const& e) {
-    return compile(module, builder, e, variables, unit);
+    return compile(builder, e, variables, unit);
   };
   switch (expression.index()) {
     case VAR: {
@@ -333,7 +344,7 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression,
     }
     case INT: {
       auto i = get<INT>(expression);
-      return builder.CreateIntToPtr(ConstantInt::getSigned(genericIntType(module), i), genericPointerType(ctx), "inttoptr");
+      return boxInt(builder, ConstantInt::getSigned(genericIntType(module), i));
     }
     case FN: {
       auto& [fn_var, fn_lty, fn_body] = get<FN>(expression);
@@ -374,7 +385,7 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression,
       }
       inner_variables[fn_var] = F->arg_begin(); // first argument is the argument
 
-      if (auto retv = compile(module, fun_builder, fn_body, inner_variables, unit))
+      if (auto retv = compile(fun_builder, fn_body, inner_variables, unit))
         fun_builder.CreateRet(retv);
 
       return builder.CreatePointerCast(memory, genericPointerType(ctx), "closptrcast");
@@ -388,14 +399,14 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression,
       auto assign_value = recurse(assign_exp);
       auto inner_vars = variables;
       inner_vars.emplace(let_var, assign_value);
-      return compile(module, builder, body_exp, inner_vars, unit);
+      return compile(builder, body_exp, inner_vars, unit);
     }
     case APP: {
       auto& [fn_exp, arg_exp] = get<APP>(expression);
       // Primitive operations require special treatment:
       if (fn_exp.get().index() == PRIM) {
         auto& [prim_oper,_1, _2] = get<PRIM>(fn_exp.get());
-        return compile_primop(module, builder, prim_oper, arg_exp, variables, unit);
+        return compile_primop(builder, prim_oper, arg_exp, variables, unit);
       }
       // The remaining cases are arbitrary function calls.
       else {
@@ -421,8 +432,9 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression,
         auto inner_vars = variables;
         for (auto& [var, _1, _2] : decls)
           //inner_vars[var] = ConstantPointerNull::get(genericPointerType(ctx));
+          // Use some specific garbage for this scenario (address 12):
           inner_vars[var] = builder.CreateIntToPtr(ConstantInt::get(genericIntType(module), 12), genericPointerType(ctx));
-        closure_prs.push_back(compile(module, builder, fn, inner_vars, unit));
+        closure_prs.push_back(compile(builder, fn, inner_vars, unit));
       }
       // Adjust the pointers in all environments to refer to the allocated closures.
       std::size_t decl_index = 0;
@@ -446,7 +458,7 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression,
       auto inner_vars = variables;
       for (std::size_t i = 0; i < decls.size(); ++i)
         inner_vars[get<lvar>(decls[i])] = closure_prs[i];
-      return compile(module, builder, exp, inner_vars, unit);
+      return compile(builder, exp, inner_vars, unit);
     }
 
     case SWITCH: {
@@ -457,11 +469,11 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression,
       IRBuilder<> default_builder(default_);
       auto result = builder.CreateAlloca(genericPointerType(ctx));
       if (default_case) {
-        default_builder.CreateStore(compile(module, default_builder, default_case.value(), variables, unit), result);
+        default_builder.CreateStore(compile(default_builder, default_case.value(), variables, unit), result);
         default_builder.CreateBr(exit_block);
       }
       else
-        insertAbort(module, default_builder);
+        insertAbort(default_builder);
 
       auto switched_v = recurse(switched_exp);
       auto switch_inst = builder.CreateSwitch(extractTag(module, builder, unit, switched_v, cases.at(0).first),
@@ -486,7 +498,7 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression,
             default:;
           }
         }
-        case_builder.CreateStore(compile(module, case_builder, exp, vars, unit), result);
+        case_builder.CreateStore(compile(case_builder, exp, vars, unit), result);
         case_builder.CreateBr(exit_block);
       }
       builder.SetInsertPoint(exit_block);
@@ -498,7 +510,7 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression,
       auto symrep = unit.symbolRepresentation.at(get<Symbol::symbol>(constr));
       switch (symrep.type) {
         case symbol_rep::CONSTANT:
-          return builder.CreateIntToPtr(symrep.value, genericPointerType(ctx));
+          return boxInt(builder, symrep.value);
         case symbol_rep::TAGGED: {
           auto rcd = record(module, builder, {builder.CreateIntToPtr(symrep.value, genericPointerType(ctx)),
                                               recurse(argument)});
@@ -536,7 +548,7 @@ Value* compile(Module& module, IRBuilder<>& builder, lexp const& expression,
 
     // Implement exceptions as terminations for now.
     case RAISE:
-      insertAbort(module, builder);
+      insertAbort(builder);
       return nullptr;
     case HANDLE:
       return recurse(get<0>(get<HANDLE>(expression)));
@@ -556,7 +568,7 @@ void compile_top(SMLTranslationUnit const& unit, Module& module) {
 
   BasicBlock *BB = BasicBlock::Create(ctx, "entry", exportFn);
   IRBuilder<> builder(BB);
-  builder.CreateRet(compile(module, builder, unit.exportedLetExpr, {}, unit));
+  builder.CreateRet(compile(builder, unit.exportedLetExpr, {}, unit));
 }
 
 }

@@ -91,10 +91,9 @@ int main(int argc, char** argv) try
 
   std::cout << "Exporting " << unit.exportedDecls << '\n';
 
-
   // Invoke the compiler.
+  addGCSymbols(*module);
   SMLCompiler::compile_top(unit, *module);
-
   SMLCompiler::performPasses(*module);
 
   // Print out all of the generated code.

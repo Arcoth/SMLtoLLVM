@@ -50,8 +50,8 @@ void performPasses(Module& mod) {
   IRBuilder<> safepoint_builder(BasicBlock::Create(ctx, "entry", safepoint_poll));
   safepoint_builder.CreateRetVoid();
 
-  // Statepoints passes
-  fpm.add(createPlaceSafepointsPass());
+  // we're not concurrent
+  // fpm.add(createPlaceSafepointsPass());
 
   fpm.doInitialization();
 
@@ -84,6 +84,71 @@ public:
   }
 };
 
+/* Constructs the allocation function, and introduces the weak symbols corresponding to the
+   heap base and size scalars linked in by the runtime. */
+void addGCSymbols(Module& mod) {
+  auto& ctx = mod.getContext();
+  auto base = new GlobalVariable(mod, Type::getInt32PtrTy(ctx),
+                     false, // constant?
+                     GlobalVariable::ExternalLinkage,
+                     nullptr, // no initialiser
+                     "heapPtr",
+                     nullptr, // no predecessor
+                     GlobalVariable::NotThreadLocal,
+                     0, // not to be treated as a GC root!
+                     true); // externally initialised
+  auto heap = new GlobalVariable(mod, Type::getInt32PtrTy(ctx),
+                     false, // constant?
+                     GlobalVariable::ExternalLinkage,
+                     nullptr, // no initialiser
+                     "heapBase",
+                     base,
+                     GlobalVariable::NotThreadLocal,
+                     0, // not to be treated as a GC root!
+                     true); // externally initialised
+  auto size = new GlobalVariable(mod, Type::getInt64Ty(ctx),
+                     false, // constant?
+                     GlobalVariable::ExternalLinkage,
+                     nullptr, // no initialiser
+                     "heapSize",
+                     heap,
+                     GlobalVariable::NotThreadLocal,
+                     0, // not to be treated as a GC root!
+                     true); // externally initialised
+
+  Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
+                   "_enterGC", &mod);
+
+  auto type = FunctionType::get(Type::getVoidTy(ctx)->getPointerTo(heapAddressSpace),
+                                {Type::getInt64Ty(ctx)}, false);
+  Function* fun = Function::Create(type, GlobalVariable::InternalLinkage,
+                                   allocationFunctionName, &mod);
+  auto size_arg = fun->arg_begin();
+
+  auto afterCheck = BasicBlock::Create(ctx, "afterCheck", fun);
+  IRBuilder<> after_builder(afterCheck);
+  auto retval = after_builder.CreateLoad(heap, "alloc_slot");
+  after_builder.CreateStore(after_builder.CreateGEP(after_builder.CreateLoad(heap, "heapptr"),
+                                                    size_arg, "newheapptr"),
+                            heap);
+  after_builder.CreateRet(after_builder.CreatePointerCast(retval, fun->getReturnType()));
+
+  auto gcCleanup = BasicBlock::Create(ctx, "gcCleanup", fun, afterCheck);
+  IRBuilder<> cleanup_builder(gcCleanup);
+  cleanup_builder.CreateCall(mod.getOrInsertFunction(gcCleanupFunctionName, Type::getVoidTy(ctx)));
+  cleanup_builder.CreateBr(afterCheck);
+
+  auto entry = BasicBlock::Create(ctx, "entry", fun, gcCleanup);
+  IRBuilder<> builder(entry);
+
+  auto storage_used = builder.CreatePtrDiff(builder.CreateLoad(heap, "heapptr"),
+                                            builder.CreateLoad(base, "baseptr"), "spaceused");
+  auto storage_left = builder.CreateSub(builder.CreateLoad(size, "heapsize"),
+                                        storage_used, "spaceleft");
+  builder.CreateCondBr(builder.CreateICmpULT(size_arg, storage_left, "checksize"),
+                       afterCheck, gcCleanup);
+}
+
 int execute(Module* mod) {
   InitializeNativeTarget();
   LLVMInitializeNativeAsmPrinter();
@@ -101,26 +166,9 @@ int execute(Module* mod) {
     return EXIT_FAILURE;
   }
 
-//  for (;;) {
-//    std::cout << " >";
-//    std::string str;
-//    getline(std::cin, str);
-//    if (str == "exit")
-//      return EXIT_SUCCESS;
-//    out << str << std::endl;
-//    auto exp = parseVerbosePlambda(in);
-//
-//
-//
-
   sys::DynamicLibrary gclib = sys::DynamicLibrary::getPermanentLibrary("SMLtoLLVM/libSML_GC.so", &err_str);
   if (!gclib.isValid()){
     errs() << "Could not load GC library: " << err_str;
-    return EXIT_FAILURE;
-  }
-  auto sym = gclib.getAddressOfSymbol("_Z8allocatem");
-  if (!sym) {
-    errs() << "Couldn't find allocator!";
     return EXIT_FAILURE;
   }
 
@@ -128,12 +176,22 @@ int execute(Module* mod) {
   assert(memManager->stackMap());
   *(void**)gclib.getAddressOfSymbol("StackMapPtr") = memManager->stackMap();
 
+  // Invoke the GC initialisation (allocate and set up the heap pointers)
+  auto gc_init = (void(*)())gclib.getAddressOfSymbol("init");
+  if (!gc_init){
+    errs() << "Could not find GC initialisation function!";
+    return EXIT_FAILURE;
+  }
+  gc_init();
+
+  // Get the structured record
   auto fce_ptr = (genericPointerTypeNative*(*)())EE->getFunctionAddress("export");
   auto lambda = fce_ptr();
 
+  // Invoke the function with the lexicographically least name
   auto last_fnc = (genericPointerTypeNative*)lambda[0];
   auto res = ((genericFunctionTypeNative*) last_fnc[0])
-               ((genericPointerTypeNative)5, last_fnc+1);
+               ((genericPointerTypeNative)((5 << 1) + 1), last_fnc+1);
 
   outs() << "Result: " << (intptr_t)res << '\n';
 

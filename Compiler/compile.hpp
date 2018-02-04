@@ -18,6 +18,8 @@ std::set<PLambda::lvar> freeVars( PLambda::lexp const& exp );
 
 inline const int heapAddressSpace = 1;
 
+inline const char* allocationFunctionName = "allocate";
+
 using genericPointerTypeNative = char*;
 using genericIntTypeNative = std::intptr_t;
 using genericFunctionTypeNative = genericPointerTypeNative(genericPointerTypeNative, genericPointerTypeNative[]);
