@@ -25,7 +25,7 @@ using genericIntTypeNative = std::intptr_t;
 using genericFunctionTypeNative = genericPointerTypeNative(genericPointerTypeNative, genericPointerTypeNative[]);
 
 inline auto genericPointerType(LLVMContext& c) {
-  return PointerType::get(Type::getInt8Ty(c), heapAddressSpace);
+  return Type::getInt8Ty(c)->getPointerTo(heapAddressSpace);
 }
 
 inline auto genericIntType(Module& m) {
@@ -37,11 +37,20 @@ inline auto tagType(Module& m) {
   return IntegerType::get(m.getContext(), genericIntType(m)->getBitWidth()/2) ;
 }
 
+// The type of a function that takes an integer.
+inline auto intFunctionType(Module& m) {
+  auto& ctx = m.getContext();
+  return FunctionType::get(genericPointerType(ctx),   // the return value
+                           {genericIntType(m),  // the argument
+                            genericPointerType(ctx)->getPointerTo(heapAddressSpace)}, // the environment.
+                           false); // not variadic
+}
+
 // The default function type of any function in the PLC.
 inline auto genericFunctionType(LLVMContext& ctx) {
   return FunctionType::get(genericPointerType(ctx),   // the return value
                            {genericPointerType(ctx),  // the argument
-                            genericPointerType(ctx)->getPointerTo(1)}, // the environment (if needed).
+                            genericPointerType(ctx)->getPointerTo(heapAddressSpace)}, // the environment.
                            false); // not variadic
 }
 
@@ -59,14 +68,19 @@ public:
   // The innermost closed let expression.
   PLambda::lexp exportedLetExpr;
 
+  // for each function, records the length of the closure.
+  std::vector<std::pair<Function*, std::size_t>> closureLength;
+
   std::map<Symbol::symbol, symbol_rep> symbolRepresentation;
 
+  // This map equates parameter index and the name of the LLVḾ function.
+  std::map<PLambda::lvar, std::string> paramFuncs,
   // Includes both the lambda variable and the name of the entity it denotes.
-  std::map<PLambda::lvar, std::string> exportedDecls;
+                                       exportedDecls;
 };
 
 // The top-most compile function. It is passed the output of printing a lexp term in SML/NJ.
-void compile_top(SMLTranslationUnit const& unit, Module& module);
+void compile_top(SMLTranslationUnit& unit, Module& module);
 
 }
 

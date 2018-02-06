@@ -56,9 +56,9 @@ int main(int argc, char** argv) try
     = {.type = symbol_rep::UNTAGGED, .value = ConstantInt::getFalse(context)};
 
   unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "true"}]
-    = {.type = symbol_rep::CONSTANT, .value = ConstantInt::getTrue(context)};
+    = {.type = symbol_rep::CONSTANT, .value = cast<ConstantInt>(ConstantInt::get(tagType(*module), 1))};
   unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "false"}]
-    = {.type = symbol_rep::CONSTANT, .value = ConstantInt::getFalse(context)};
+    = {.type = symbol_rep::CONSTANT, .value = cast<ConstantInt>(ConstantInt::get(tagType(*module), 0))};
 
   for (auto& [var, name] : unit.exportedDecls) {
     static auto skip_to = [&] (std::istream& s, char c) {
@@ -78,7 +78,7 @@ int main(int argc, char** argv) try
           if (!ss)
             break;
           unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, name}]
-            = {.type = symbol_rep::TAGGED, ConstantInt::get(genericIntType(*module), debruijn++)};
+            = {.type = symbol_rep::TAGGED, ConstantInt::get(tagType(*module), debruijn++)};
           std::cout << "New constructor: " << name << '\n';
           skip_to(ss, '|');
         }
@@ -89,14 +89,23 @@ int main(int argc, char** argv) try
     skip_to(stream, '\n');
   }
 
-  std::cout << "Exporting " << unit.exportedDecls << '\n';
-
   // Invoke the compiler.
   addGCSymbols(*module);
   SMLCompiler::compile_top(unit, *module);
+
+  if (verifyModule(*module, &errs())) {
+    errs() << "The code is ill-formed!\n\n";
+    module->print(outs(), nullptr);
+    return EXIT_SUCCESS;
+  }
+
   SMLCompiler::performPasses(*module);
 
+  std::cout << "Declarations: " << unit.paramFuncs << '\n';
+  std::cout << "Exporting " << unit.exportedDecls << '\n';
+
   // Print out all of the generated code.
+  outs() << "\n\n\n\nPRINTING LLVM MODULE CONTENTS:\n\n";
   module->print(outs(), nullptr);
 
   if (verifyModule(*module, &errs())) {
@@ -104,7 +113,7 @@ int main(int argc, char** argv) try
     return EXIT_SUCCESS;
   }
 
-  return execute(module.release());
+  return execute(unit.closureLength.data(), unit.closureLength.size(), module.release());
 } catch (SMLCompiler::CompileFailException const& e) {
   std::cerr << "Compilation failed: " << e.what();
 } catch (SMLCompiler::UnsupportedException const& e) {

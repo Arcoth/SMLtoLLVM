@@ -11,5 +11,6 @@ namespace SMLCompiler {
   void addGCSymbols(llvm::Module& mod);
 
   // Execute the first function in the module with some test parameter.
-  int execute(llvm::Module* mod);
+  int execute(void const*, std::size_t len,
+              llvm::Module* mod);
 }

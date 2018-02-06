@@ -7,7 +7,10 @@
 #include <cinttypes>
 
 #include <iostream>
+#include <algorithm>
 #include <vector>
+
+#include <unordered_map>
 
 #include "llvm-statepoint-utils/dist/llvm-statepoint-tablegen.h"
 
@@ -16,27 +19,37 @@
 void* StackMapPtr;
 statepoint_table_t* table;
 
-uint64_t heapSize = 256;
-uint32_t* heapBase;
+using heapUnit = uint64_t;
 
-uint32_t* heapPtr = heapBase; // points at the first free spot in the heap
-uint32_t* auxHeap;
+uint64_t heapSize = 256;
+heapUnit* heapBase;
+
+heapUnit* heapPtr; // points at the first free spot in the heap
+heapUnit* auxHeap;
+
+std::unordered_map<void*   , std::size_t> const* closureLengths;
 
 extern "C" void init() {
-  heapBase = heapPtr = (uint32_t*)malloc(heapSize);
-  auxHeap = (uint32_t*)malloc(heapSize);
-
-  table = generate_table(StackMapPtr, 0.5);
-
-  std::cout << "\n\nHeap size: " << heapSize << '\n'
-            << "Printing stackmap hash table:\n";
-  print_table(stdout, table, true);
+  heapBase = heapPtr = (heapUnit*)malloc(heapSize);
   std::cout << "Initialised GC!\n";
 }
 
-uint32_t* relocate_uint32star(uint32_t** slot, uint32_t* heapPtr) {
-  uint32_t val = **slot;
-  *heapPtr = val;
+heapUnit* relocate(heapUnit** slot, heapUnit* heapPtr) {
+  const uint64_t tag = *(uint64_t*)*slot;
+
+  uint64_t len; // This is the total number of slots of size 64 bytes occupied.
+  if ((tag & 1) == 0) {
+    len = closureLengths->at((void*)tag);
+    std::cout << "relocating a closure with length " << len << '\n';
+  }
+  else {
+    len = tag & UINT32_MAX;
+    std::cout << "relocating an object with length " << len << '\n';
+  }
+
+  std::cout << "relocating an object of tag " << std::hex << tag << std::endl;
+
+  std::copy_n(*slot, len, heapPtr);
   *slot = heapPtr;
   return heapPtr + 1;
 }
@@ -47,15 +60,25 @@ extern "C" void __attribute__((naked)) _enterGC() {
 }
 
 extern "C" void cleanup(uint8_t* stackPtr) {
-  std::cout << "Stack pointer: " << (void*)stackPtr << '\n';
+  if (!table) {
+    table = generate_table(StackMapPtr, 0.5);
+
+    std::cout << "\n\nHeap size: " << heapSize << '\n'
+              << "Printing stackmap hash table:\n";
+    print_table(stdout, table, true);
+    auxHeap = (heapUnit*)malloc(heapSize);
+  }
+
+  std::cout << "Stack pointer: " << (void*)stackPtr << '\n'
+            << "Heap base: " << heapBase << " heap: " << heapPtr << " end of heap: " << heapBase + heapSize << '\n';
 
   intptr_t retAddr = *((intptr_t*)stackPtr);
   stackPtr += sizeof(void*); // step into frame
   frame_info_t* frame = lookup_return_address(table, retAddr);
 
   // we'll be moving live stuff to the current aux heap
-  uint32_t *newBase = auxHeap,
-           *newHeapPtr = auxHeap;
+  auto *newBase = auxHeap,
+       *newHeapPtr = auxHeap;
 
 #ifdef PRINT_STUFF
   printf("\n\n--- starting to scan the stack for gc ---\n");
@@ -63,22 +86,24 @@ extern "C" void cleanup(uint8_t* stackPtr) {
 #endif
 
   while(frame != NULL) {
-    uint16_t i = 0;
-    for(; i < frame->numSlots; i++) {
+    uint16_t counter = 0;
+    for(uint16_t i = 0; i < frame->numSlots; i++) {
       pointer_slot_t ptrSlot = frame->slots[i];
       if(ptrSlot.kind >= 0) {
         // we do not use derived pointers
         assert(false && "unexpected derived pointer\n");
       }
 
-      uint32_t** ptr = (uint32_t**)(stackPtr + ptrSlot.offset);
-      // Check whether this is an unboxed integer...
-      if (((intptr_t)ptr & 1) == 0)
-        newHeapPtr = relocate_uint32star(ptr, newHeapPtr);
+      heapUnit** ptr = (heapUnit**)(stackPtr + ptrSlot.offset);
+      if (((intptr_t)*ptr & 1) == 0
+      && *ptr >= heapBase && *ptr < heapBase + heapSize) {
+        newHeapPtr = relocate(ptr, newHeapPtr);
+        counter++;
+      }
     }
 
 #ifdef PRINT_STUFF
-    printf("\trelocated %" PRIu16 " pointer(s).\n", i);
+    printf("\trelocated %" PRIu16 " pointer(s).\n", counter);
 #endif
 
     // move to next frame. seems we have to add one pointer size to

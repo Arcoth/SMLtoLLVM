@@ -50,8 +50,7 @@ void performPasses(Module& mod) {
   IRBuilder<> safepoint_builder(BasicBlock::Create(ctx, "entry", safepoint_poll));
   safepoint_builder.CreateRetVoid();
 
-  // we're not concurrent
-  // fpm.add(createPlaceSafepointsPass());
+  fpm.add(createPlaceSafepointsPass());
 
   fpm.doInitialization();
 
@@ -69,17 +68,22 @@ void performPasses(Module& mod) {
 }
 
 class MemManager : public SectionMemoryManager {
-  void* _stackmap;
+  void* _stackmap = nullptr;
+  size_t _len = 0;
 
 public:
   auto stackMap() const {return _stackmap;}
+  auto len() const {return _len;}
 
   uint8_t* allocateDataSection(uintptr_t Size, unsigned Alignment, unsigned SectionID, StringRef SectionName,
                                bool readOnly) override {
     outs() << "Allocating " << Size << " bytes for " << SectionName << '\n';
     auto p = SectionMemoryManager::allocateDataSection(Size, Alignment, SectionID, SectionName, readOnly);
-    if (SectionName == ".llvm_stackmaps")
+    if (SectionName == ".llvm_stackmaps") {
       _stackmap = p;
+      _len = Size;
+    }
+
     return p;
   }
 };
@@ -88,20 +92,20 @@ public:
    heap base and size scalars linked in by the runtime. */
 void addGCSymbols(Module& mod) {
   auto& ctx = mod.getContext();
-  auto base = new GlobalVariable(mod, Type::getInt32PtrTy(ctx),
-                     false, // constant?
-                     GlobalVariable::ExternalLinkage,
-                     nullptr, // no initialiser
-                     "heapPtr",
-                     nullptr, // no predecessor
-                     GlobalVariable::NotThreadLocal,
-                     0, // not to be treated as a GC root!
-                     true); // externally initialised
-  auto heap = new GlobalVariable(mod, Type::getInt32PtrTy(ctx),
+  auto base = new GlobalVariable(mod, Type::getInt64PtrTy(ctx),
                      false, // constant?
                      GlobalVariable::ExternalLinkage,
                      nullptr, // no initialiser
                      "heapBase",
+                     nullptr, // no predecessor
+                     GlobalVariable::NotThreadLocal,
+                     0, // not to be treated as a GC root!
+                     true); // externally initialised
+  auto heap = new GlobalVariable(mod, Type::getInt64PtrTy(ctx),
+                     false, // constant?
+                     GlobalVariable::ExternalLinkage,
+                     nullptr, // no initialiser
+                     "heapPtr",
                      base,
                      GlobalVariable::NotThreadLocal,
                      0, // not to be treated as a GC root!
@@ -123,23 +127,28 @@ void addGCSymbols(Module& mod) {
                                 {Type::getInt64Ty(ctx)}, false);
   Function* fun = Function::Create(type, GlobalVariable::InternalLinkage,
                                    allocationFunctionName, &mod);
-  auto size_arg = fun->arg_begin();
 
-  auto afterCheck = BasicBlock::Create(ctx, "afterCheck", fun);
-  IRBuilder<> after_builder(afterCheck);
+  auto afterCheck = BasicBlock::Create(ctx, "afterCheck", fun),
+       gcCleanup  = BasicBlock::Create(ctx, "gcCleanup" , fun, afterCheck),
+       entry      = BasicBlock::Create(ctx, "entry"     , fun, gcCleanup);
+
+  IRBuilder<> after_builder(afterCheck),
+              cleanup_builder(gcCleanup),
+              builder(entry);
+
+  // Round the size argument up: we allocate in 8 byte chunks.
+  auto size_arg = builder.CreateUDiv(builder.CreateAdd(fun->arg_begin(),
+                                                       ConstantInt::get(fun->arg_begin()->getType(), 7)),
+                                     ConstantInt::get(fun->arg_begin()->getType(), 8));
+
   auto retval = after_builder.CreateLoad(heap, "alloc_slot");
   after_builder.CreateStore(after_builder.CreateGEP(after_builder.CreateLoad(heap, "heapptr"),
                                                     size_arg, "newheapptr"),
                             heap);
   after_builder.CreateRet(after_builder.CreatePointerCast(retval, fun->getReturnType()));
 
-  auto gcCleanup = BasicBlock::Create(ctx, "gcCleanup", fun, afterCheck);
-  IRBuilder<> cleanup_builder(gcCleanup);
   cleanup_builder.CreateCall(mod.getOrInsertFunction(gcCleanupFunctionName, Type::getVoidTy(ctx)));
   cleanup_builder.CreateBr(afterCheck);
-
-  auto entry = BasicBlock::Create(ctx, "entry", fun, gcCleanup);
-  IRBuilder<> builder(entry);
 
   auto storage_used = builder.CreatePtrDiff(builder.CreateLoad(heap, "heapptr"),
                                             builder.CreateLoad(base, "baseptr"), "spaceused");
@@ -149,7 +158,9 @@ void addGCSymbols(Module& mod) {
                        afterCheck, gcCleanup);
 }
 
-int execute(Module* mod) {
+int execute(void const* closLengthByFun_, std::size_t len,
+            Module* mod) {
+  auto closLengthByFun = (std::pair<Function*, std::size_t> const*)closLengthByFun_;
   InitializeNativeTarget();
   LLVMInitializeNativeAsmPrinter();
   LLVMInitializeNativeAsmParser();
@@ -173,8 +184,17 @@ int execute(Module* mod) {
   }
 
   EE->generateCodeForModule(mod);
+
   assert(memManager->stackMap());
   *(void**)gclib.getAddressOfSymbol("StackMapPtr") = memManager->stackMap();
+
+  std::unordered_map<void*, std::size_t> closureLengths;
+  while (len--) {
+    auto [fun, len] = *closLengthByFun++;
+    closureLengths[(void*)EE->getPointerToFunction(fun)] = len;
+  }
+
+  *(void**)gclib.getAddressOfSymbol("closureLengths") = &closureLengths;
 
   // Invoke the GC initialisation (allocate and set up the heap pointers)
   auto gc_init = (void(*)())gclib.getAddressOfSymbol("init");
@@ -189,11 +209,12 @@ int execute(Module* mod) {
   auto lambda = fce_ptr();
 
   // Invoke the function with the lexicographically least name
-  auto last_fnc = (genericPointerTypeNative*)lambda[0];
-  auto res = ((genericFunctionTypeNative*) last_fnc[0])
-               ((genericPointerTypeNative)((5 << 1) + 1), last_fnc+1);
+  auto last_fnc = (genericPointerTypeNative*)lambda[1];
+  auto res = (genericIntTypeNative)((genericFunctionTypeNative*) last_fnc[0])
+               ((genericPointerTypeNative)((50 << 1) + 1), last_fnc+1);
+  res >>= 1;
 
-  outs() << "Result: " << (intptr_t)res << '\n';
+  outs() << "Result: " << res << '\n';
 
   return EXIT_SUCCESS;
 }
