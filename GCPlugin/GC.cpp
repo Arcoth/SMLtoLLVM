@@ -21,7 +21,7 @@ statepoint_table_t* table;
 
 using heapUnit = uint64_t;
 
-uint64_t heapSize = 256;
+uint64_t heapSize = 24;
 heapUnit* heapBase;
 
 heapUnit* heapPtr; // points at the first free spot in the heap
@@ -30,28 +30,53 @@ heapUnit* auxHeap;
 std::unordered_map<void*   , std::size_t> const* closureLengths;
 
 extern "C" void init() {
-  heapBase = heapPtr = (heapUnit*)malloc(heapSize);
+  heapBase = heapPtr = (heapUnit*)malloc(heapSize * sizeof(heapUnit));
   std::cout << "Initialised GC!\n";
 }
 
-heapUnit* relocate(heapUnit** slot, heapUnit* heapPtr) {
-  const uint64_t tag = *(uint64_t*)*slot;
+heapUnit* relocate(heapUnit** slot, heapUnit* newHeapPtr) {
+  const uint64_t tag = **slot;
+
+  std::cout << "relocating an object of tag " << std::hex << tag << ", ";
 
   uint64_t len; // This is the total number of slots of size 64 bytes occupied.
-  if ((tag & 1) == 0) {
+
+  switch (tag & 0b11) {
+  case 0:
     len = closureLengths->at((void*)tag);
-    std::cout << "relocating a closure with length " << len << '\n';
+    std::cout << "relocating a closure ";
+    break;
+  case 0b01:
+    len = (tag & UINT32_MAX) >> 1;
+    std::cout << "relocating a record ";
+    break;
+  case 0b11:
+    std::cout << "revisit during relocation.";
+    *slot = (heapUnit*)(tag & ~(heapUnit)0b11);
+    return newHeapPtr;
+  default: assert(0);
   }
-  else {
-    len = tag & UINT32_MAX;
-    std::cout << "relocating an object with length " << len << '\n';
+  std::cout << " of length " << len << '\n';
+
+
+  assert(len < heapSize-(newHeapPtr-auxHeap));
+  std::copy_n(*slot, len, newHeapPtr);
+  **slot = (heapUnit)newHeapPtr | 0b11;
+  *slot = newHeapPtr;
+  newHeapPtr += len;
+
+  auto is_in = [] (auto p1, auto x, auto p2) {return p1 <= x && x < p2;};
+  for (int i = 1; i < len; ++i) {
+    auto element = (*slot)[i];
+    if (element & 1)
+      continue;
+    auto elem_as_ptr = (heapUnit**)*slot + i;
+    // verify these pointers point into the old heap
+    assert(is_in(heapBase, *elem_as_ptr, heapBase + heapSize));
+    newHeapPtr = relocate(elem_as_ptr, newHeapPtr);
   }
 
-  std::cout << "relocating an object of tag " << std::hex << tag << std::endl;
-
-  std::copy_n(*slot, len, heapPtr);
-  *slot = heapPtr;
-  return heapPtr + 1;
+  return newHeapPtr;
 }
 
 extern "C" void __attribute__((naked)) _enterGC() {
@@ -66,7 +91,7 @@ extern "C" void cleanup(uint8_t* stackPtr) {
     std::cout << "\n\nHeap size: " << heapSize << '\n'
               << "Printing stackmap hash table:\n";
     print_table(stdout, table, true);
-    auxHeap = (heapUnit*)malloc(heapSize);
+    auxHeap = (heapUnit*)malloc(heapSize * sizeof(heapUnit));
   }
 
   std::cout << "Stack pointer: " << (void*)stackPtr << '\n'
@@ -95,8 +120,8 @@ extern "C" void cleanup(uint8_t* stackPtr) {
       }
 
       heapUnit** ptr = (heapUnit**)(stackPtr + ptrSlot.offset);
-      if (((intptr_t)*ptr & 1) == 0
-      && *ptr >= heapBase && *ptr < heapBase + heapSize) {
+      // check whether this is a heap pointer or an unboxed integer:
+      if (((intptr_t)*ptr & 0b11) == 0) {
         newHeapPtr = relocate(ptr, newHeapPtr);
         counter++;
       }
@@ -119,6 +144,9 @@ extern "C" void cleanup(uint8_t* stackPtr) {
     printf("frame return address: 0x%" PRIX64 "\n", retAddr);
 #endif
   }
+//
+//  if (newHeapPtr - newBase < 24)
+//    abort();
 
 #ifdef PRINT_STUFF
   printf("Reached the end of the stack.\n\n");
@@ -131,5 +159,5 @@ extern "C" void cleanup(uint8_t* stackPtr) {
 
   // overwrite old space with 1's to
   // cause weird results if something's wrong.
-  memset(auxHeap, 0x7F, heapSize);
+  memset(auxHeap, 0x7F, heapSize * sizeof(heapUnit));
 }

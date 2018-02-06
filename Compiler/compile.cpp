@@ -147,13 +147,19 @@ Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type, std::s
   return builder.CreatePointerCast(ptr, type->getPointerTo(heapAddressSpace), "allocatedobj");
 }
 
+Value* boxIntNoCast(IRBuilder<>& builder, Value* x) {
+  return builder.CreateAdd(builder.CreateShl(x, 1, "shifted_int"), ConstantInt::get(x->getType(), 1), "boxed_int");
+}
+
 Value* boxInt(IRBuilder<>& builder, Value* x) {
   auto& module = *builder.GetInsertBlock()->getModule();
-  return builder.CreateAdd(builder.CreateShl(x, 1, "shifted_int"), ConstantInt::get(x->getType(), 1), "boxed_int");
+  return builder.CreateIntToPtr(boxIntNoCast(builder, x), genericPointerType(module.getContext()));
 }
 
 // expects a value of generic pointer tpye,
 Value* unboxInt(IRBuilder<>& builder, Value* x) {
+  if (x->getType()->isIntegerTy())
+    return x;
   return builder.CreateAShr(builder.CreatePtrToInt(x, genericIntType(*builder.GetInsertBlock()->getModule()), "ptr_to_int"),
                             1, "unboxed_int");
 }
@@ -182,7 +188,7 @@ Value* compile_primop(IRBuilder<>& builder,
     auto v_ptr = builder.CreatePointerCast(v, genericPointerType(module.getContext())->getPointerTo(heapAddressSpace));
     arg_value = [v] {return v;};
     for (int i = 0; i < 3; ++i)
-      arg_values.push_back([i, v_ptr, &builder] {return builder.CreateLoad(builder.CreateConstGEP1_32(v_ptr, i));});
+      arg_values.push_back([i, v_ptr, &builder] {return builder.CreateLoad(builder.CreateConstGEP1_32(v_ptr, i+1));});
   }
 
   auto unbox_args = [&] {
@@ -263,7 +269,7 @@ Value* compile_primop(IRBuilder<>& builder,
     default:
       throw UnsupportedException{"primop " + std::to_string(op.index())};
   }
-  return boxInt(builder, result);
+  return result;
 }
 
 // the first 64 bit is the tag!
@@ -272,7 +278,7 @@ Value* record(IRBuilder<>& builder, Rng const& values ) {
   auto& module = *builder.GetInsertBlock()->getModule();
   auto storage = createAllocation(module, builder, genericPointerType(module.getContext()), std::size(values)+1);
   auto tag_ptr = builder.CreatePointerCast(storage, tagType(module)->getPointerTo(heapAddressSpace), "tag_len_ptr");
-  builder.CreateStore(ConstantInt::get(tagType(module), ((std::size(values)+1) << 1) | 1), tag_ptr);
+  builder.CreateStore(ConstantInt::get(tagType(module), ((std::size(values)+1) << 2) | 1), tag_ptr);
   for (std::size_t i = 0; i < std::size(values); ++i)
     builder.CreateStore(values[i], builder.CreateConstGEP1_32(storage, i+1, "rcdvalptr"));
   return storage;
@@ -360,7 +366,7 @@ Value* compile(IRBuilder<>& builder,
     }
     case INT: {
       auto i = get<INT>(expression);
-      return boxInt(builder, ConstantInt::getSigned(genericIntType(module), i));
+      return ConstantInt::getSigned(genericIntType(module), i);
     }
     case FN: {
       auto& [fn_var, fn_lty, fn_body] = get<FN>(expression);
@@ -410,8 +416,11 @@ Value* compile(IRBuilder<>& builder,
       }
       inner_variables[fn_var] = F->arg_begin(); // first argument is the argument
 
-      if (auto retv = compile(fun_builder, fn_body, inner_variables, unit))
+      if (auto retv = compile(fun_builder, fn_body, inner_variables, unit)) {
+        if (retv->getType()->isIntegerTy())
+          retv = fun_builder.CreateIntToPtr(retv, genericPointerType(ctx));
         fun_builder.CreateRet(retv);
+      }
 
       return builder.CreatePointerCast(memory, genericPointerType(ctx), "closptrcast");
     }
@@ -436,7 +445,13 @@ Value* compile(IRBuilder<>& builder,
       else {
         Value* arg_val = recurse(arg_exp);
 
-        Type* fun_type = arg_val->getType()->isIntegerTy()? intFunctionType(module) : genericFunctionType(ctx);
+        Type* fun_type = nullptr;
+        if ( arg_val->getType()->isIntegerTy()) {
+          fun_type = intFunctionType(module);
+          arg_val = boxIntNoCast(builder, arg_val);
+        }
+        else
+          fun_type = genericFunctionType(ctx);
 
         auto wrapper_type = StructType::create({fun_type->getPointerTo(),
                                                 ArrayType::get(genericPointerType(ctx), 0)}, "GenericWrapper");
@@ -518,9 +533,9 @@ Value* compile(IRBuilder<>& builder,
           auto [sym, var] = *datacon;
           switch (unit.symbolRepresentation.at(sym).type) {
             case symbol_rep::TAGGED:
-              vars[var] = case_builder.CreateLoad(case_builder.CreateConstGEP1_32(
+              vars[var] = case_builder.CreateConstGEP1_32(
                             case_builder.CreatePointerCast(switched_v, genericPointerType(ctx)->getPointerTo(heapAddressSpace)),
-                            1));
+                            1);
               break;
             case symbol_rep::UNTAGGED:
               vars[var] = switched_v;
@@ -532,7 +547,8 @@ Value* compile(IRBuilder<>& builder,
         // If the result is an integer, cast the store.
         Value* case_result = compile(case_builder, exp, vars, unit);
         if (case_result->getType()->isIntegerTy())
-          case_builder.CreateStore(case_result, case_builder.CreatePointerCast(result, genericIntType(module)->getPointerTo()));
+          case_builder.CreateStore(boxIntNoCast(case_builder, case_result),
+                                   case_builder.CreatePointerCast(result, genericIntType(module)->getPointerTo()));
         else
           case_builder.CreateStore(case_result, result);
 

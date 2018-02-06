@@ -78,7 +78,7 @@ int main(int argc, char** argv) try
           if (!ss)
             break;
           unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, name}]
-            = {.type = symbol_rep::TAGGED, ConstantInt::get(tagType(*module), debruijn++)};
+            = {.type = symbol_rep::TAGGED, ConstantInt::get(tagType(*module), debruijn++)  };
           std::cout << "New constructor: " << name << '\n';
           skip_to(ss, '|');
         }
@@ -101,12 +101,12 @@ int main(int argc, char** argv) try
 
   SMLCompiler::performPasses(*module);
 
-  std::cout << "Declarations: " << unit.paramFuncs << '\n';
-  std::cout << "Exporting " << unit.exportedDecls << '\n';
-
   // Print out all of the generated code.
   outs() << "\n\n\n\nPRINTING LLVM MODULE CONTENTS:\n\n";
   module->print(outs(), nullptr);
+
+  std::cout << "Declarations: " << unit.paramFuncs << '\n';
+  std::cout << "Exporting " << unit.exportedDecls << '\n';
 
   if (verifyModule(*module, &errs())) {
     errs() << "The code is ill-formed!";

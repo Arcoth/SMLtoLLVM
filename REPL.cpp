@@ -211,7 +211,7 @@ int execute(void const* closLengthByFun_, std::size_t len,
   // Invoke the function with the lexicographically least name
   auto last_fnc = (genericPointerTypeNative*)lambda[1];
   auto res = (genericIntTypeNative)((genericFunctionTypeNative*) last_fnc[0])
-               ((genericPointerTypeNative)((50 << 1) + 1), last_fnc+1);
+               ((genericPointerTypeNative)((5 << 1) + 1), last_fnc+1);
   res >>= 1;
 
   outs() << "Result: " << res << '\n';
