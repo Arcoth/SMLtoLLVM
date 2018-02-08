@@ -70,7 +70,7 @@ void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
     else {
       // TODO: handle floating point?
       is.putback(c);
-      parse_into<INT>(exp, is, int{});
+      parse_into<INT>(exp, is, intType{});
     }
   }
   else if (s[0] == 'v') { // VAR or LET
@@ -155,7 +155,7 @@ void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
   else
     on_error(is, "lexp parser unknown symbol ", s);
 
-  if (not is.iword(no_select_xword_index)) {
+  if (!is.iword(no_select_xword_index)) {
     is >> std::ws;
     if (is.peek() == '[') {
       auto v = parse_list<lvar>(is);

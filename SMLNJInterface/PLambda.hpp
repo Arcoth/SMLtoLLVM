@@ -9,6 +9,8 @@ using Lty::tyc;
 using Lty::tkind;
 using Lty::lty;
 
+using intType = std::uint64_t;
+
 using lvar = LambdaVar::lvar;
 
 using dataconstr = tuple<Symbol::symbol, Access::conrep, lty>;
@@ -18,7 +20,7 @@ dataconstr parse_dataconstr(std::istream& is);
 struct con : LABELLED_VARIANT(
   //(DATAcon, tuple<dataconstr, vector<tyc>, lvar>)
   (DATAcon, tuple<Symbol::symbol, lvar>)
-  (INTcon, int)
+  (INTcon, intType)
   (INT32con, std::int32_t)
   (INTINFcon, maxint)
   (WORDcon, word)
@@ -40,7 +42,7 @@ struct dict {
 
 struct lexp : LABELLED_VARIANT(
   (VAR, lvar)
-  (INT, int)
+  (INT, intType)
   (INT32, std::int32_t)
   (WORD, word)
   (WORD32, word32)
