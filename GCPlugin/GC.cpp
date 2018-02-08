@@ -19,15 +19,21 @@
 void* StackMapPtr;
 statepoint_table_t* table;
 
+
+
 using heapUnit = uint64_t;
 
 uint64_t heapSize = 24;
-heapUnit* heapBase;
 
+heapUnit* heapBase;
 heapUnit* heapPtr; // points at the first free spot in the heap
 heapUnit* auxHeap;
 
-std::unordered_map<void*   , std::size_t> const* closureLengths;
+uint64_t largeHeapSize = 256;
+heapUnit* largeHeapBase;
+heapUnit* largeHeapPtr; // points at the first free spot in the heap
+
+std::unordered_map<void*, std::size_t> const* closureLengths;
 
 extern "C" void init() {
   heapBase = heapPtr = (heapUnit*)malloc(heapSize * sizeof(heapUnit));
@@ -58,8 +64,7 @@ heapUnit* relocate(heapUnit** slot, heapUnit* newHeapPtr) {
   }
   std::cout << " of length " << len << '\n';
 
-
-  assert(len < heapSize-(newHeapPtr-auxHeap));
+  assert(len < largeHeapSize-(newHeapPtr-largeHeapBase));
   std::copy_n(*slot, len, newHeapPtr);
   **slot = (heapUnit)newHeapPtr | 0b11;
   *slot = newHeapPtr;
@@ -71,9 +76,11 @@ heapUnit* relocate(heapUnit** slot, heapUnit* newHeapPtr) {
     if (element & 1)
       continue;
     auto elem_as_ptr = (heapUnit**)*slot + i;
-    // verify these pointers point into the old heap
-    assert(is_in(heapBase, *elem_as_ptr, heapBase + heapSize));
-    newHeapPtr = relocate(elem_as_ptr, newHeapPtr);
+    // verify these pointers point into the heap
+    assert(is_in(heapBase, *elem_as_ptr, heapBase + heapSize)
+        || is_in(largeHeapBase, *elem_as_ptr, largeHeapBase + largeHeapSize));
+    if (is_in(heapBase, *elem_as_ptr, heapBase + heapSize))
+      newHeapPtr = relocate(elem_as_ptr, newHeapPtr);
   }
 
   return newHeapPtr;
@@ -84,6 +91,7 @@ extern "C" void __attribute__((naked)) _enterGC() {
       "jmp cleanup");
 }
 
+// cleanup the small heap
 extern "C" void cleanup(uint8_t* stackPtr) {
   if (!table) {
     table = generate_table(StackMapPtr, 0.5);
@@ -92,18 +100,12 @@ extern "C" void cleanup(uint8_t* stackPtr) {
               << "Printing stackmap hash table:\n";
     print_table(stdout, table, true);
     auxHeap = (heapUnit*)malloc(heapSize * sizeof(heapUnit));
+    largeHeapBase = largeHeapPtr = (heapUnit*)malloc(largeHeapSize * sizeof(heapUnit));
   }
-
-  std::cout << "Stack pointer: " << (void*)stackPtr << '\n'
-            << "Heap base: " << heapBase << " heap: " << heapPtr << " end of heap: " << heapBase + heapSize << '\n';
 
   intptr_t retAddr = *((intptr_t*)stackPtr);
   stackPtr += sizeof(void*); // step into frame
   frame_info_t* frame = lookup_return_address(table, retAddr);
-
-  // we'll be moving live stuff to the current aux heap
-  auto *newBase = auxHeap,
-       *newHeapPtr = auxHeap;
 
 #ifdef PRINT_STUFF
   printf("\n\n--- starting to scan the stack for gc ---\n");
@@ -120,9 +122,11 @@ extern "C" void cleanup(uint8_t* stackPtr) {
       }
 
       heapUnit** ptr = (heapUnit**)(stackPtr + ptrSlot.offset);
-      // check whether this is a heap pointer or an unboxed integer:
-      if (((intptr_t)*ptr & 0b11) == 0) {
-        newHeapPtr = relocate(ptr, newHeapPtr);
+      // check this is a heap pointer to the small heap
+      if (((intptr_t)*ptr & 0b11) == 0
+       && heapBase <= *ptr
+       && *ptr < heapBase + heapSize) {
+        largeHeapPtr = relocate(ptr, largeHeapPtr);
         counter++;
       }
     }
@@ -144,18 +148,15 @@ extern "C" void cleanup(uint8_t* stackPtr) {
     printf("frame return address: 0x%" PRIX64 "\n", retAddr);
 #endif
   }
-//
-//  if (newHeapPtr - newBase < 24)
-//    abort();
 
 #ifdef PRINT_STUFF
   printf("Reached the end of the stack.\n\n");
 #endif
 
-  // swap spaces
+  // swap spaces for debug purposes:
+  heapPtr = auxHeap;
   auxHeap = heapBase;
-  heapBase = newBase;
-  heapPtr = newHeapPtr;
+  heapBase = heapPtr;
 
   // overwrite old space with 1's to
   // cause weird results if something's wrong.
