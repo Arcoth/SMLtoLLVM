@@ -1,4 +1,5 @@
 #include "compile.hpp"
+#include "GCPlugin/GCBasicConstants.hpp"
 
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
@@ -148,7 +149,7 @@ Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type, std::s
 }
 
 Value* boxIntNoCast(IRBuilder<>& builder, Value* x) {
-  return builder.CreateAdd(builder.CreateShl(x, 1, "shifted_int"), ConstantInt::get(x->getType(), 1), "boxed_int");
+  return builder.CreateAdd(builder.CreateShl(x, 2, "shifted_int"), ConstantInt::get(x->getType(), GC::intTag), "boxed_int");
 }
 
 Value* boxInt(IRBuilder<>& builder, Value* x) {
@@ -161,7 +162,7 @@ Value* unboxInt(IRBuilder<>& builder, Value* x) {
   if (x->getType()->isIntegerTy())
     return x;
   return builder.CreateAShr(builder.CreatePtrToInt(x, genericIntType(*builder.GetInsertBlock()->getModule()), "ptr_to_int"),
-                            1, "unboxed_int");
+                            2, "unboxed_int");
 }
 
 Value* compile(IRBuilder<>& builder,
@@ -278,7 +279,7 @@ Value* record(IRBuilder<>& builder, Rng const& values ) {
   auto& module = *builder.GetInsertBlock()->getModule();
   auto storage = createAllocation(module, builder, genericPointerType(module.getContext()), std::size(values)+1);
   auto tag_ptr = builder.CreatePointerCast(storage, tagType(module)->getPointerTo(heapAddressSpace), "tag_len_ptr");
-  builder.CreateStore(ConstantInt::get(tagType(module), ((std::size(values)+1) << 2) | 1), tag_ptr);
+  builder.CreateStore(ConstantInt::get(tagType(module), ((std::size(values)+1) << 2) | GC::lengthTag), tag_ptr);
   for (std::size_t i = 0; i < std::size(values); ++i)
     builder.CreateStore(values[i], builder.CreateConstGEP1_32(storage, i+1, "rcdvalptr"));
   return storage;
