@@ -58,7 +58,7 @@ std::unordered_map<void*, std::size_t> const* closureLengths;
 
 extern "C" void init() {
   heapBase = heapPtr = (heapUnit*)malloc(heapSize * sizeof(heapUnit));
-  referenceHeapBase = (heapUnit*)malloc(referenceHeapSize * sizeof(heapUnit));
+  referenceHeapBase = referenceHeapPtr = (heapUnit*)malloc(referenceHeapSize * sizeof(heapUnit));
   largeHeapBase = largeHeapPtr = (heapUnit*)malloc(largeHeapSize * sizeof(heapUnit));
   auxLargeHeap = (heapUnit*)malloc(largeHeapSize * sizeof(heapUnit));
 #ifdef GC_DEBUG
@@ -95,7 +95,7 @@ uint64_t getRecordLength(uint64_t tag) {
     return closureLengths->at((void*)tag);
     break;
   case 0b01:
-    return (tag & UINT32_MAX) >> 1;
+    return (tag & UINT32_MAX) >> 2;
     break;
   case 0b11:
     return 0;
@@ -138,11 +138,9 @@ void relocate(uint8_t* const stackPtr, heapUnit** slot,
     if (element & 0b11) // not a pointer
       continue;
     auto elem_as_ptr = (heapUnit**)*slot + i;
-    if (!*elem_as_ptr)
-      continue;
     // if this pointee could indirectly reference the relocated heap..
-    auto origin = determineSource(*elem_as_ptr);
-    if (canPointInto.count({origin, cleanup_target}) && elem_as_ptr != slot)
+    auto elem_origin = determineSource(*elem_as_ptr);
+    if (canPointInto.count({elem_origin, cleanup_target}) && elem_as_ptr != slot)
       relocate(stackPtr, elem_as_ptr, newHeapPtr, units_left, cleanup_target, reloc_target);
   }
 }

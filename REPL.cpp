@@ -89,7 +89,7 @@ public:
 };
 
 Value* insertAllocation(LLVMContext& ctx, IRBuilder<>& builder, Function* fun, Function* collect_fun,
-                        Value* base, Value* heap, Value* left) {
+                        Value* heap, Value* left) {
   auto gcCleanup  = BasicBlock::Create(ctx, "gcCleanup" , fun),
        afterCheck = BasicBlock::Create(ctx, "afterCheck", fun);
 
@@ -119,21 +119,12 @@ Value* insertAllocation(LLVMContext& ctx, IRBuilder<>& builder, Function* fun, F
    heap base and size scalars linked in by the runtime. */
 void addGCSymbols(Module& mod) {
   auto& ctx = mod.getContext();
-  auto base = new GlobalVariable(mod, Type::getInt64PtrTy(ctx),
-                     false, // constant?
-                     GlobalVariable::ExternalLinkage,
-                     nullptr, // no initialiser
-                     "heapBase",
-                     nullptr, // no predecessor
-                     GlobalVariable::NotThreadLocal,
-                     0, // not to be treated as a GC root!
-                     true); // externally initialised
   auto heap = new GlobalVariable(mod, Type::getInt64PtrTy(ctx),
                      false, // constant?
                      GlobalVariable::ExternalLinkage,
                      nullptr, // no initialiser
                      "heapPtr",
-                     base,
+                     nullptr, // no predecessor
                      GlobalVariable::NotThreadLocal,
                      0, // not to be treated as a GC root!
                      true); // externally initialised
@@ -147,9 +138,28 @@ void addGCSymbols(Module& mod) {
                      0, // not to be treated as a GC root!
                      true); // externally initialised
 
-  Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
+  auto mut_heap = new GlobalVariable(mod, Type::getInt64PtrTy(ctx),
+                     false, // constant?
+                     GlobalVariable::ExternalLinkage,
+                     nullptr, // no initialiser
+                     "referenceHeapPtr",
+                     nullptr,
+                     GlobalVariable::NotThreadLocal,
+                     0, // not to be treated as a GC root!
+                     true); // externally initialised
+  auto mut_left = new GlobalVariable(mod, Type::getInt64Ty(ctx),
+                     false, // constant?
+                     GlobalVariable::ExternalLinkage,
+                     nullptr, // no initialiser
+                     "referenceSizeLeft",
+                     mut_heap,
+                     GlobalVariable::NotThreadLocal,
+                     0, // not to be treated as a GC root!
+                     true); // externally initialised
+
+  auto collect = Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
                    invokeSmallHeapCollection, &mod);
-  Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
+  auto collect_mut = Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
                    invokeMutableHeapCollection, &mod);
 
   auto type = FunctionType::get(Type::getVoidTy(ctx)->getPointerTo(heapAddressSpace),
@@ -159,16 +169,14 @@ void addGCSymbols(Module& mod) {
                                    immutableAllocFun, &mod),
        mutable_fun = Function::Create(type, GlobalVariable::InternalLinkage,
                                    mutableAllocFun, &mod);
-  ;
+
   {
     IRBuilder<> builder(BasicBlock::Create(ctx, "entry", immutable_fun));
-    auto collect = cast<Function>(mod.getOrInsertFunction(invokeSmallHeapCollection, Type::getVoidTy(ctx)));
-    builder.CreateRet(insertAllocation(ctx, builder, immutable_fun, collect, base, heap, left));
+    builder.CreateRet(insertAllocation(ctx, builder, immutable_fun, collect, heap, left));
   }
   {
     IRBuilder<> builder(BasicBlock::Create(ctx, "entry", mutable_fun));
-    auto collect = cast<Function>(mod.getOrInsertFunction(invokeMutableHeapCollection, Type::getVoidTy(ctx)));
-    builder.CreateRet(insertAllocation(ctx, builder, mutable_fun, collect, base, heap, left));
+    builder.CreateRet(insertAllocation(ctx, builder, mutable_fun, collect_mut, mut_heap, mut_left));
   }
 }
 
