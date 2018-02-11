@@ -110,18 +110,18 @@ void addGCSymbols(Module& mod) {
                      GlobalVariable::NotThreadLocal,
                      0, // not to be treated as a GC root!
                      true); // externally initialised
-  auto size = new GlobalVariable(mod, Type::getInt64Ty(ctx),
+  auto left = new GlobalVariable(mod, Type::getInt64Ty(ctx),
                      false, // constant?
                      GlobalVariable::ExternalLinkage,
                      nullptr, // no initialiser
-                     "heapSize",
+                     "sizeLeft",
                      heap,
                      GlobalVariable::NotThreadLocal,
                      0, // not to be treated as a GC root!
                      true); // externally initialised
 
   Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
-                   "_enterGC", &mod);
+                   invokeSmallHeapCollection, &mod);
 
   auto type = FunctionType::get(Type::getVoidTy(ctx)->getPointerTo(heapAddressSpace),
                                 {Type::getInt64Ty(ctx)}, false);
@@ -141,21 +141,19 @@ void addGCSymbols(Module& mod) {
                                                        ConstantInt::get(fun->arg_begin()->getType(), 7)),
                                      ConstantInt::get(fun->arg_begin()->getType(), 8));
 
+  builder.CreateCondBr(builder.CreateICmpULT(size_arg, builder.CreateLoad(left, "size_left"), "checksize"),
+                       afterCheck, gcCleanup);
+
   auto retval = after_builder.CreateLoad(heap, "alloc_slot");
   after_builder.CreateStore(after_builder.CreateGEP(after_builder.CreateLoad(heap, "heapptr"),
                                                     size_arg, "newheapptr"),
                             heap);
+  after_builder.CreateStore(after_builder.CreateSub(after_builder.CreateLoad(left, "new_size_left"), size_arg, "size_left_after_alloc"),
+                            left);
   after_builder.CreateRet(after_builder.CreatePointerCast(retval, fun->getReturnType()));
 
-  cleanup_builder.CreateCall(mod.getOrInsertFunction(gcCleanupFunctionName, Type::getVoidTy(ctx)));
+  cleanup_builder.CreateCall(mod.getOrInsertFunction(invokeSmallHeapCollection, Type::getVoidTy(ctx)));
   cleanup_builder.CreateBr(afterCheck);
-
-  auto storage_used = builder.CreatePtrDiff(builder.CreateLoad(heap, "heapptr"),
-                                            builder.CreateLoad(base, "baseptr"), "spaceused");
-  auto storage_left = builder.CreateSub(builder.CreateLoad(size, "heapsize"),
-                                        storage_used, "spaceleft");
-  builder.CreateCondBr(builder.CreateICmpULT(size_arg, storage_left, "checksize"),
-                       afterCheck, gcCleanup);
 }
 
 int execute(void const* closLengthByFun_, std::size_t len,
@@ -211,8 +209,8 @@ int execute(void const* closLengthByFun_, std::size_t len,
   // Invoke the function with the lexicographically least name
   auto last_fnc = (genericPointerTypeNative*)lambda[1];
   auto res = (genericIntTypeNative)((genericFunctionTypeNative*) last_fnc[0])
-               ((genericPointerTypeNative)((5 << 1) + 1), last_fnc+1);
-  res >>= 1;
+               ((genericPointerTypeNative)((200 << 2) + 1), last_fnc+1);
+  res >>= 2;
 
   outs() << "Result: " << res << '\n';
 
