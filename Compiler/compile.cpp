@@ -156,6 +156,18 @@ Value* boxInt(IRBuilder<>& builder, Value* x) {
   return builder.CreateIntToPtr(boxIntNoCast(builder, x), genericPointerType(module.getContext()));
 }
 
+// Cast the second argument to a pointer to int if the first one is an int.
+// Return appropriately casted pointer to stored location.
+Value* storeValue(IRBuilder<>& builder, Value* value, Value* ptr) {
+  if (value->getType()->isIntegerTy()) {
+    ptr = builder.CreatePointerCast(ptr, value->getType()->getPointerTo(heapAddressSpace));
+    builder.CreateStore(boxIntNoCast(builder, value), ptr);
+  }
+  else
+    builder.CreateStore(value, ptr);
+  return ptr;
+}
+
 // expects a value of generic pointer tpye,
 Value* unboxInt(IRBuilder<>& builder, Value* x) {
   if (x->getType()->isIntegerTy())
@@ -257,13 +269,13 @@ Value* compile_primop(IRBuilder<>& builder,
                                                           genericPointerType(module.getContext())->getPointerTo(heapAddressSpace)));
     }
     case MAKEREF: {
-      result = createAllocation(module, builder, genericPointerType(module.getContext()), true);
-      builder.CreateStore(arg_value(), result);
+      auto val = arg_value();
+      result = createAllocation(module, builder, val->getType(), true);
+      storeValue(builder, val, result);
       return builder.CreatePointerCast(result, genericPointerType(module.getContext()));
     }
     case ASSIGN: {
-      builder.CreateStore(arg_values[1](), builder.CreatePointerCast(arg_values[0](),
-                                                                     genericPointerType(module.getContext())->getPointerTo(heapAddressSpace)));
+      storeValue(builder, arg_values[1](), arg_values[0]());
       return ConstantPointerNull::get(genericPointerType(module.getContext()));
     }
     default:
@@ -280,7 +292,7 @@ Value* record(IRBuilder<>& builder, Rng const& values ) {
   auto tag_ptr = builder.CreatePointerCast(storage, tagType(module)->getPointerTo(heapAddressSpace), "tag_len_ptr");
   builder.CreateStore(ConstantInt::get(tagType(module), ((std::size(values)+1) << 2) | GC::lengthTag), tag_ptr);
   for (std::size_t i = 0; i < std::size(values); ++i)
-    builder.CreateStore(values[i], builder.CreateConstGEP1_32(storage, i+1, "rcdvalptr"));
+    storeValue(builder, values[i], builder.CreateConstGEP1_32(storage, i+1, "rcdvalptr"));
   return storage;
 }
 
