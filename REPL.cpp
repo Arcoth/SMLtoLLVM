@@ -88,6 +88,33 @@ public:
   }
 };
 
+Value* insertAllocation(LLVMContext& ctx, IRBuilder<>& builder, Function* fun, Function* collect_fun,
+                        Value* base, Value* heap, Value* left) {
+  auto gcCleanup  = BasicBlock::Create(ctx, "gcCleanup" , fun),
+       afterCheck = BasicBlock::Create(ctx, "afterCheck", fun);
+
+  // Round the size argument up: we allocate in 8 byte chunks.
+  auto size_arg = builder.CreateUDiv(builder.CreateAdd(fun->arg_begin(),
+                                                       ConstantInt::get(fun->arg_begin()->getType(), 7)),
+                                     ConstantInt::get(fun->arg_begin()->getType(), 8));
+
+  builder.CreateCondBr(builder.CreateICmpULT(size_arg, builder.CreateLoad(left, "size_left"), "checksize"),
+                       afterCheck, gcCleanup);
+
+  builder.SetInsertPoint(gcCleanup);
+  builder.CreateCall(collect_fun);
+  builder.CreateBr(afterCheck);
+
+  builder.SetInsertPoint(afterCheck);
+  auto retval = builder.CreateLoad(heap, "alloc_slot");
+  builder.CreateStore(builder.CreateGEP(builder.CreateLoad(heap, "heapptr"),
+                                        size_arg, "newheapptr"),
+                      heap);
+  builder.CreateStore(builder.CreateSub(builder.CreateLoad(left, "new_size_left"), size_arg, "left_after_alloc"),
+                      left);
+  return builder.CreatePointerCast(retval, fun->getReturnType());
+}
+
 /* Constructs the allocation function, and introduces the weak symbols corresponding to the
    heap base and size scalars linked in by the runtime. */
 void addGCSymbols(Module& mod) {
@@ -122,38 +149,27 @@ void addGCSymbols(Module& mod) {
 
   Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
                    invokeSmallHeapCollection, &mod);
+  Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
+                   invokeMutableHeapCollection, &mod);
 
   auto type = FunctionType::get(Type::getVoidTy(ctx)->getPointerTo(heapAddressSpace),
                                 {Type::getInt64Ty(ctx)}, false);
-  Function* fun = Function::Create(type, GlobalVariable::InternalLinkage,
-                                   allocationFunctionName, &mod);
 
-  auto afterCheck = BasicBlock::Create(ctx, "afterCheck", fun),
-       gcCleanup  = BasicBlock::Create(ctx, "gcCleanup" , fun, afterCheck),
-       entry      = BasicBlock::Create(ctx, "entry"     , fun, gcCleanup);
-
-  IRBuilder<> after_builder(afterCheck),
-              cleanup_builder(gcCleanup),
-              builder(entry);
-
-  // Round the size argument up: we allocate in 8 byte chunks.
-  auto size_arg = builder.CreateUDiv(builder.CreateAdd(fun->arg_begin(),
-                                                       ConstantInt::get(fun->arg_begin()->getType(), 7)),
-                                     ConstantInt::get(fun->arg_begin()->getType(), 8));
-
-  builder.CreateCondBr(builder.CreateICmpULT(size_arg, builder.CreateLoad(left, "size_left"), "checksize"),
-                       afterCheck, gcCleanup);
-
-  auto retval = after_builder.CreateLoad(heap, "alloc_slot");
-  after_builder.CreateStore(after_builder.CreateGEP(after_builder.CreateLoad(heap, "heapptr"),
-                                                    size_arg, "newheapptr"),
-                            heap);
-  after_builder.CreateStore(after_builder.CreateSub(after_builder.CreateLoad(left, "new_size_left"), size_arg, "size_left_after_alloc"),
-                            left);
-  after_builder.CreateRet(after_builder.CreatePointerCast(retval, fun->getReturnType()));
-
-  cleanup_builder.CreateCall(mod.getOrInsertFunction(invokeSmallHeapCollection, Type::getVoidTy(ctx)));
-  cleanup_builder.CreateBr(afterCheck);
+  auto immutable_fun = Function::Create(type, GlobalVariable::InternalLinkage,
+                                   immutableAllocFun, &mod),
+       mutable_fun = Function::Create(type, GlobalVariable::InternalLinkage,
+                                   mutableAllocFun, &mod);
+  ;
+  {
+    IRBuilder<> builder(BasicBlock::Create(ctx, "entry", immutable_fun));
+    auto collect = cast<Function>(mod.getOrInsertFunction(invokeSmallHeapCollection, Type::getVoidTy(ctx)));
+    builder.CreateRet(insertAllocation(ctx, builder, immutable_fun, collect, base, heap, left));
+  }
+  {
+    IRBuilder<> builder(BasicBlock::Create(ctx, "entry", mutable_fun));
+    auto collect = cast<Function>(mod.getOrInsertFunction(invokeMutableHeapCollection, Type::getVoidTy(ctx)));
+    builder.CreateRet(insertAllocation(ctx, builder, mutable_fun, collect, base, heap, left));
+  }
 }
 
 int execute(void const* closLengthByFun_, std::size_t len,

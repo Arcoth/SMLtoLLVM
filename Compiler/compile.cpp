@@ -5,7 +5,6 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/Support/raw_ostream.h>
 
-#include <boost/container/static_vector.hpp>
 #include <boost/range/adaptor/transformed.hpp>
 
 #include <iostream>
@@ -138,9 +137,9 @@ SMLTranslationUnit::SMLTranslationUnit(lexp const& exp) {
   }
 }
 
-Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type, std::size_t n = 1) {
+Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type, bool _mutable = false, std::size_t n = 1) {
   static const auto size_type = genericIntType(module);
-  auto alloc_fun = module.getFunction(allocationFunctionName);
+  auto alloc_fun = module.getFunction(_mutable? mutableAllocFun : immutableAllocFun);
   if (!alloc_fun)
     throw CompileFailException{"Allocation function not found!"};
 
@@ -179,7 +178,7 @@ Value* compile_primop(IRBuilder<>& builder,
   using namespace Primop;
   auto& module = *builder.GetInsertBlock()->getModule();
 
-  boost::container::static_vector<std::function<Value*()>, 5> arg_values;
+  std::vector<std::function<Value*()>> arg_values;
   std::function<Value*()> arg_value;
   if (auto rcd = get_if<RECORD>(&exp))
     for (auto& e : *rcd)
@@ -258,7 +257,7 @@ Value* compile_primop(IRBuilder<>& builder,
                                                           genericPointerType(module.getContext())->getPointerTo(heapAddressSpace)));
     }
     case MAKEREF: {
-      result = createAllocation(module, builder, genericPointerType(module.getContext()));
+      result = createAllocation(module, builder, genericPointerType(module.getContext()), true);
       builder.CreateStore(arg_value(), result);
       return builder.CreatePointerCast(result, genericPointerType(module.getContext()));
     }
@@ -277,7 +276,7 @@ Value* compile_primop(IRBuilder<>& builder,
 template <typename Rng>
 Value* record(IRBuilder<>& builder, Rng const& values ) {
   auto& module = *builder.GetInsertBlock()->getModule();
-  auto storage = createAllocation(module, builder, genericPointerType(module.getContext()), std::size(values)+1);
+  auto storage = createAllocation(module, builder, genericPointerType(module.getContext()), false, std::size(values)+1);
   auto tag_ptr = builder.CreatePointerCast(storage, tagType(module)->getPointerTo(heapAddressSpace), "tag_len_ptr");
   builder.CreateStore(ConstantInt::get(tagType(module), ((std::size(values)+1) << 2) | GC::lengthTag), tag_ptr);
   for (std::size_t i = 0; i < std::size(values); ++i)
@@ -401,7 +400,7 @@ Value* compile(IRBuilder<>& builder,
       }
 
       // Allocate and fill the closure with captured variables.
-      auto memory = createAllocation(module, builder, wrapper_type);
+      auto memory = createAllocation(module, builder, wrapper_type, false);
       builder.CreateStore(aggregate_v, memory);
 
       BasicBlock *BB = BasicBlock::Create(ctx, "entry", F);

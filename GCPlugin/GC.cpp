@@ -107,14 +107,16 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap);
 
 void relocate(uint8_t* const stackPtr, heapUnit** slot,
               heapUnit*& newHeapPtr, std::size_t& units_left,
-              Heap cleanup_target, Heap reloc_target) {
+              Heap cleanup_target, Heap reloc_target)
+{
+  auto origin = determineSource(*slot);
   const uint64_t tag = **slot;
 
 #if GC_DEBUG >= 2
   std::cout << "relocating an object of tag " << std::hex << tag << std::endl;
 #endif // GC_DEBUG
 
-  uint64_t len = getRecordLength(tag); // This is the total number of slots of size 64 bytes occupied.
+  uint64_t len = isSingleUnitHeap(origin)? 1 : getRecordLength(tag); // This is the total number of slots of size 64 bytes occupied.
   if (len == 0) { // we're revisiting an already relocated record...
     *slot = (heapUnit*)(tag & ~(heapUnit)0b11);
     return;
@@ -131,7 +133,7 @@ void relocate(uint8_t* const stackPtr, heapUnit** slot,
     units_left -= len;
   }
 
-  for (int i = 1; i < len; ++i) {
+  for (int i = isSingleUnitHeap(origin)? 0 : 1; i < len; ++i) {
     auto element = (*slot)[i];
     if (element & 0b11) // not a pointer
       continue;
