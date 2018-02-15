@@ -5,8 +5,6 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/Support/raw_ostream.h>
 
-#include <boost/range/adaptor/transformed.hpp>
-
 #include <iostream>
 #include <iterator>
 
@@ -152,15 +150,25 @@ Value* boxIntNoCast(IRBuilder<>& builder, Value* x) {
 }
 
 Value* boxInt(IRBuilder<>& builder, Value* x) {
+  if (!x->getType()->isIntegerTy())
+    return x;
   auto& module = *builder.GetInsertBlock()->getModule();
-  return builder.CreateIntToPtr(boxIntNoCast(builder, x), genericPointerType(module.getContext()));
+  return builder.CreateIntToPtr(boxIntNoCast(builder, x), genericPointerType(module.getContext()), "int_in_ptr");
+}
+
+// Cast the second argument to a pointer to int if the first one is an int.
+// Return appropriately casted pointer to stored location.
+Value* getBoxedValue(IRBuilder<>& builder, Value* value) {
+  if (value->getType()->isIntegerTy())
+    return boxIntNoCast(builder, value);
+  return value;
 }
 
 // Cast the second argument to a pointer to int if the first one is an int.
 // Return appropriately casted pointer to stored location.
 Value* storeValue(IRBuilder<>& builder, Value* value, Value* ptr) {
   if (value->getType()->isIntegerTy()) {
-    ptr = builder.CreatePointerCast(ptr, value->getType()->getPointerTo(heapAddressSpace));
+    ptr = builder.CreatePointerCast(ptr, value->getType()->getPointerTo(heapAddressSpace), "int_store");
     builder.CreateStore(boxIntNoCast(builder, value), ptr);
   }
   else
@@ -197,10 +205,12 @@ Value* compile_primop(IRBuilder<>& builder,
       arg_values.push_back([&] {return compile(builder, e, variables, unit);});
   else {
     auto v = compile(builder, exp, variables, unit);
-    auto v_ptr = builder.CreatePointerCast(v, genericPointerType(module.getContext())->getPointerTo(heapAddressSpace));
     arg_value = [v] {return v;};
-    for (int i = 0; i < 3; ++i)
-      arg_values.push_back([i, v_ptr, &builder] {return builder.CreateLoad(builder.CreateConstGEP1_32(v_ptr, i+1));});
+    if (!v->getType()->isIntegerTy()) {
+      auto v_ptr = builder.CreatePointerCast(v, genericPointerType(module.getContext())->getPointerTo(heapAddressSpace), "primop_rcd_ptr");
+      for (int i = 0; i < 3; ++i)
+        arg_values.push_back([i, v_ptr, &builder] {return builder.CreateLoad(builder.CreateConstGEP1_32(v_ptr, i+1), "primop_rcd_elem");});
+    }
   }
 
   auto unbox_args = [&] {
@@ -266,16 +276,19 @@ Value* compile_primop(IRBuilder<>& builder,
     }
     case DEREF: {
       return builder.CreateLoad(builder.CreatePointerCast(arg_value(),
-                                                          genericPointerType(module.getContext())->getPointerTo(heapAddressSpace)));
+                                                          genericPointerType(module.getContext())->getPointerTo(heapAddressSpace), "deref_ptr"), "deref_val");
     }
     case MAKEREF: {
       auto val = arg_value();
       result = createAllocation(module, builder, val->getType(), true);
       storeValue(builder, val, result);
-      return builder.CreatePointerCast(result, genericPointerType(module.getContext()));
+      return builder.CreatePointerCast(result, genericPointerType(module.getContext()), "ref_ptr");
     }
     case ASSIGN: {
-      storeValue(builder, arg_values[1](), arg_values[0]());
+      auto lhs = arg_values[0](),
+           rhs = arg_values[1]();
+      lhs = builder.CreatePointerCast(lhs, rhs->getType()->getPointerTo(heapAddressSpace), "assign_casted_ptr");
+      storeValue(builder, rhs, lhs);
       return ConstantPointerNull::get(genericPointerType(module.getContext()));
     }
     default:
@@ -288,11 +301,21 @@ Value* compile_primop(IRBuilder<>& builder,
 template <typename Rng>
 Value* record(IRBuilder<>& builder, Rng const& values ) {
   auto& module = *builder.GetInsertBlock()->getModule();
-  auto storage = createAllocation(module, builder, genericPointerType(module.getContext()), false, std::size(values)+1);
-  auto tag_ptr = builder.CreatePointerCast(storage, tagType(module)->getPointerTo(heapAddressSpace), "tag_len_ptr");
-  builder.CreateStore(ConstantInt::get(tagType(module), ((std::size(values)+1) << 2) | GC::lengthTag), tag_ptr);
-  for (std::size_t i = 0; i < std::size(values); ++i)
-    storeValue(builder, values[i], builder.CreateConstGEP1_32(storage, i+1, "rcdvalptr"));
+  // The type used to hold the results while they're being computed.
+  std::vector<Type*> record_elem_types{genericIntType(module)};
+  for (auto x : values)
+    record_elem_types.push_back(x->getType());
+  auto record_type = StructType::create(record_elem_types);
+
+  //! DON'T ALLOCATE memory first; first compute values, then the heap array to store them in.
+  auto tag_v = ConstantInt::get(genericIntType(module), ((std::size(values)+1) << 2) | GC::lengthTag);
+  auto aggregate_v = builder.CreateInsertValue(UndefValue::get(record_type), tag_v, {0}, "record_tag"); // store function pointer...
+  for (unsigned i = 0; i < std::size(values); ++i)
+    aggregate_v = builder.CreateInsertValue(aggregate_v, getBoxedValue(builder, values[i]), {i+1}, "rcd_val_ptr");
+
+  auto storage = createAllocation(module, builder, record_type);
+  builder.CreateStore(aggregate_v, storage);
+
   return storage;
 }
 
@@ -320,7 +343,7 @@ Value* extractTag(IRBuilder<>& builder, SMLTranslationUnit const& unit, Value* e
         case symbol_rep::UNTAGGED:
           return builder.CreateIsNotNull(exp_v);
         case symbol_rep::TAGGED:
-          return builder.CreateLoad(getTagPtrFromRecordPtr(builder, exp_v));
+          return builder.CreateLoad(getTagPtrFromRecordPtr(builder, exp_v), "record_tag");
         case symbol_rep::CONSTANT:
           return builder.CreateIntCast(unboxInt(builder, exp_v), tagType(module), false);
       }
@@ -392,8 +415,6 @@ Value* compile(IRBuilder<>& builder,
 
       unit.closureLength.emplace_back(F, free_vars.size()+1);
 
-      outs() << "The body of fn " << fn_var << " is " << fn_body.get().index() << '\n';
-
       unit.paramFuncs[fn_var] = F->getName();
 
       auto env_array_type = ArrayType::get(genericPointerType(ctx), free_vars.size());
@@ -424,17 +445,14 @@ Value* compile(IRBuilder<>& builder,
         unsigned index = 0;
         auto env = std::next(F->arg_begin()); // second argument is the environment.
         for (auto var : free_vars)
-          inner_variables[var] = fun_builder.CreateLoad(fun_builder.CreateConstGEP1_32(env, index++, "capturedptr"), "captured");
+          inner_variables[var] = fun_builder.CreateLoad(fun_builder.CreateConstGEP1_32(env, index++, "captured_ptr"), "captured");
       }
       inner_variables[fn_var] = F->arg_begin(); // first argument is the argument
 
-      if (auto retv = compile(fun_builder, fn_body, inner_variables, unit)) {
-        if (retv->getType()->isIntegerTy())
-          retv = fun_builder.CreateIntToPtr(retv, genericPointerType(ctx));
-        fun_builder.CreateRet(retv);
-      }
+      if (auto retv = compile(fun_builder, fn_body, inner_variables, unit))
+        fun_builder.CreateRet(boxInt(fun_builder, retv));
 
-      return builder.CreatePointerCast(memory, genericPointerType(ctx), "closptrcast");
+      return builder.CreatePointerCast(memory, genericPointerType(ctx), "clos_ptr_cast");
     }
     case LET: {
       auto& [let_var, assign_exp, body_exp] = get<LET>(expression);
@@ -465,14 +483,12 @@ Value* compile(IRBuilder<>& builder,
         else
           fun_type = genericFunctionType(ctx);
 
-        auto wrapper_type = StructType::create({fun_type->getPointerTo(),
-                                                ArrayType::get(genericPointerType(ctx), 0)}, "GenericWrapper");
+        auto fn_v = recurse(fn_exp);
+        auto closure_ptr = builder.CreatePointerCast(fn_v, genericPointerType(ctx)->getPointerTo(heapAddressSpace), "closure_ptr");
+        auto fn_ptr = builder.CreateLoad(builder.CreatePointerCast(closure_ptr, fun_type->getPointerTo()->getPointerTo(heapAddressSpace), "fun_ptr_ptr"), "fun_ptr");
+        auto env_v = builder.CreateConstGEP1_32(closure_ptr, 1, "env_ptr");
 
-        auto closure_ptr = builder.CreatePointerCast(recurse(fn_exp), wrapper_type->getPointerTo(heapAddressSpace), "closureptr");
-
-        auto fn_ptr = builder.CreateLoad(builder.CreateConstGEP2_32(wrapper_type, closure_ptr, 0, 0, "funptrptr"), "funptr");
-        return builder.CreateCall(fn_ptr, {arg_val, builder.CreatePointerCast(builder.CreateConstGEP2_32(wrapper_type, closure_ptr, 0, 1, "envptr"),
-                                                                              genericPointerType(ctx)->getPointerTo(heapAddressSpace))});
+        return builder.CreateCall(fn_ptr, {arg_val, env_v});
       }
     }
     case FIX: {
@@ -489,7 +505,7 @@ Value* compile(IRBuilder<>& builder,
         for (auto& [var, _1, _2] : decls)
           //inner_vars[var] = ConstantPointerNull::get(genericPointerType(ctx));
           // Use some specific garbage for this scenario (address 12):
-          inner_vars[var] = builder.CreateIntToPtr(ConstantInt::get(genericIntType(module), 12), genericPointerType(ctx));
+          inner_vars[var] = builder.CreateIntToPtr(ConstantInt::get(genericIntType(module), 0xDEADBEEF), genericPointerType(ctx));
         closure_prs.push_back(compile(builder, fn, inner_vars, unit));
       }
       // Adjust the pointers in all environments to refer to the allocated closures.
@@ -504,7 +520,7 @@ Value* compile(IRBuilder<>& builder,
             builder.CreateStore(closure_prs[decl_index],
                                 builder.CreateConstGEP1_32(
                                   builder.CreatePointerCast(clos, genericPointerType(ctx)->getPointerTo(heapAddressSpace)),
-                                  pos+1, "closureupdateelemptr"));
+                                  pos+1, "closure_update_elem_ptr"));
           }
         }
         ++decl_index;
@@ -520,11 +536,11 @@ Value* compile(IRBuilder<>& builder,
     case SWITCH: {
       auto& [switched_exp, cases, default_case] = get<SWITCH>(expression);
       auto func = builder.GetInsertBlock()->getParent();
-      outs() << "Compiling switch for function " << func->getName() << '\n';
       auto exit_block = BasicBlock::Create(ctx, "continue", func);
       BasicBlock* default_ = BasicBlock::Create(ctx, "default", func, exit_block);
       IRBuilder<> default_builder(default_);
-      auto result = builder.CreateAlloca(genericPointerType(ctx));
+      auto result = builder.CreateAlloca(genericPointerType(ctx), nullptr, "switch_result_ptr");
+      default_builder.CreateStore(ConstantPointerNull::get(genericPointerType(ctx)), result);
       if (default_case) {
         default_builder.CreateStore(compile(default_builder, default_case.value(), variables, unit), result);
         default_builder.CreateBr(exit_block);
@@ -545,9 +561,7 @@ Value* compile(IRBuilder<>& builder,
           auto [sym, var] = *datacon;
           switch (unit.symbolRepresentation.at(sym).type) {
             case symbol_rep::TAGGED:
-              vars[var] = case_builder.CreateConstGEP1_32(
-                            case_builder.CreatePointerCast(switched_v, genericPointerType(ctx)->getPointerTo(heapAddressSpace)),
-                            1);
+              vars[var] = case_builder.CreatePointerCast(switched_v, genericPointerType(ctx)->getPointerTo(heapAddressSpace));
               break;
             case symbol_rep::UNTAGGED:
               vars[var] = switched_v;
@@ -567,7 +581,7 @@ Value* compile(IRBuilder<>& builder,
         case_builder.CreateBr(exit_block);
       }
       builder.SetInsertPoint(exit_block);
-      return builder.CreateLoad(result);
+      return builder.CreateLoad(result, "switch_result");
     }
 
     case CON: {
@@ -589,12 +603,18 @@ Value* compile(IRBuilder<>& builder,
     }
 
     case RECORD: {
-      auto ptr = record(builder, get<RECORD>(expression) | boost::adaptors::transformed(recurse));
-      return builder.CreatePointerCast(ptr, genericPointerType(ctx), "rcdptr");
+      std::vector<Value*> values;
+      for (auto& e : get<RECORD>(expression))
+        values.push_back(recurse(e));
+      auto ptr = record(builder, values);
+      return builder.CreatePointerCast(ptr, genericPointerType(ctx), "rcd_ptr");
     }
     case SRECORD: {
-      auto ptr = record(builder, get<SRECORD>(expression) | boost::adaptors::transformed(recurse));
-      return builder.CreatePointerCast(ptr, genericPointerType(ctx)->getPointerTo(heapAddressSpace), "srcdptr");
+      std::vector<Value*> values;
+      for (auto& e : get<SRECORD>(expression))
+        values.push_back(recurse(e));
+      auto ptr = record(builder, values);
+      return builder.CreatePointerCast(ptr, genericPointerType(ctx)->getPointerTo(heapAddressSpace), "srcd_ptr");
     }
 
     case SELECT: {
@@ -603,7 +623,7 @@ Value* compile(IRBuilder<>& builder,
         throw UnsupportedException{"Nested indexing"};
       auto record_v = builder.CreatePointerCast(recurse(record),
                                                 genericPointerType(ctx)->getPointerTo(heapAddressSpace));
-      return builder.CreateLoad(builder.CreateConstGEP1_32(record_v, indices[0] + 1, "selectedptr"), "selected");
+      return builder.CreateLoad(builder.CreateConstGEP1_32(record_v, indices[0] + 1, "selected_ptr"), "selected");
     }
 
     case TFN:
@@ -633,7 +653,9 @@ void compile_top(SMLTranslationUnit& unit, Module& module) {
 
   BasicBlock *BB = BasicBlock::Create(ctx, "entry", exportFn);
   IRBuilder<> builder(BB);
-  builder.CreateRet(compile(builder, unit.exportedLetExpr, {}, unit));
+  auto v = compile(builder, unit.exportedLetExpr, {}, unit);
+  builder.CreateStore(ConstantInt::get(Type::getInt32Ty(ctx), 0x777), getTagPtrFromRecordPtr(builder, v));
+  builder.CreateRet(v);
 }
 
 }
