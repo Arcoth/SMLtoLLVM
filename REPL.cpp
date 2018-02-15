@@ -18,6 +18,7 @@
 
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
 
+#include <chrono>
 #include <iostream>
 #include <new>
 
@@ -25,7 +26,7 @@ namespace SMLCompiler {
 
 using namespace llvm;
 
-void performPasses(Module& mod) {
+void performOptimisationPasses(Module& mod) {
   auto& ctx = mod.getContext();
 
   // Create a new pass manager attached to it.
@@ -39,6 +40,7 @@ void performPasses(Module& mod) {
   fpm.add(createGVNPass());
   // Simplify the control flow graph (deleting unreachable blocks, etc).
   fpm.add(createCFGSimplificationPass());
+  fpm.add(createTailCallEliminationPass());
 
   // Add a preliminary safepoint poller
   auto safepoint_poll =
@@ -61,7 +63,9 @@ void performPasses(Module& mod) {
     outs() << "Performing optimisation and GC passes on " << fun.getName() << '\n';
     fpm.run(fun);
   }
+}
 
+void performStatepointsPass(Module& mod) {
   legacy::PassManager pm;
   pm.add(createRewriteStatepointsForGCPass());
   pm.run(mod);
@@ -180,8 +184,7 @@ void addGCSymbols(Module& mod) {
   }
 }
 
-int execute(void const* closLengthByFun_, std::size_t len,
-            Module* mod) {
+int execute(Module* mod, std::size_t functionIndex, void const* closLengthByFun_, std::size_t len) {
   auto closLengthByFun = (std::pair<Function*, std::size_t> const*)closLengthByFun_;
   InitializeNativeTarget();
   LLVMInitializeNativeAsmPrinter();
@@ -230,13 +233,20 @@ int execute(void const* closLengthByFun_, std::size_t len,
   auto fce_ptr = (genericPointerTypeNative*(*)())EE->getFunctionAddress("export");
   auto lambda = fce_ptr();
 
-  // Invoke the function with the lexicographically least name
-  auto last_fnc = (genericPointerTypeNative*)lambda[1];
-  auto res = (genericIntTypeNative)((genericFunctionTypeNative*) last_fnc[0])
-               ((genericPointerTypeNative)((200 << 2) + 1), last_fnc+1);
-  res >>= 2;
 
-  outs() << "Result: " << res << '\n';
+  // Invoke the function with the given index. Indexing starts at 1.
+  auto last_fnc = (genericPointerTypeNative*)lambda[functionIndex+1];
+
+
+  auto start_time = std::chrono::high_resolution_clock::now();
+  auto res = (genericIntTypeNative)((genericFunctionTypeNative*) last_fnc[0])
+               ((genericPointerTypeNative)((200000 << 2) + 1), last_fnc+1);
+  res >>= 2;
+  auto result_time = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> elapsed_seconds = result_time-start_time;
+
+  outs() << "Time: " << (int)(elapsed_seconds.count()*1000) << "ms\n"
+         << "Result: " << res << '\n';
 
   return EXIT_SUCCESS;
 }
