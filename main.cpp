@@ -93,17 +93,19 @@ int main(int argc, char** argv) try
   addGCSymbols(*module);
   SMLCompiler::compile_top(unit, *module);
 
+  SMLCompiler::performOptimisationPasses(*module);
+
   if (verifyModule(*module, &errs())) {
     errs() << "The code is ill-formed!\n\n";
     module->print(outs(), nullptr);
     return EXIT_SUCCESS;
   }
 
-  SMLCompiler::performPasses(*module);
-
   // Print out all of the generated code.
   outs() << "\n\n\n\nPRINTING LLVM MODULE CONTENTS:\n\n";
   module->print(outs(), nullptr);
+
+  SMLCompiler::performStatepointsPass(*module);
 
   std::cout << "Declarations: " << unit.paramFuncs << '\n';
   std::cout << "Exporting " << unit.exportedDecls << '\n';
@@ -113,8 +115,23 @@ int main(int argc, char** argv) try
     return EXIT_SUCCESS;
   }
 
-  return execute(unit.closureLength.data(), unit.closureLength.size(), module.release());
-} catch (SMLCompiler::CompileFailException const& e) {
+  std::set<std::string> functionNames;
+  for (auto& [_, n] : unit.exportedDecls)
+    functionNames.insert(n);
+
+  auto decl_iter = functionNames.find("main");
+  if (decl_iter == functionNames.end()) {
+    std::cerr << "\nNo main function in SML program!";
+    return EXIT_SUCCESS;
+  }
+
+
+  auto main_fun_index = std::distance(functionNames.begin(),
+                                      decl_iter);
+  // Need to transfer ownership.
+  return execute(module.release(), main_fun_index, unit.closureLength.data(), unit.closureLength.size());
+}
+  catch (SMLCompiler::CompileFailException const& e) {
   std::cerr << "Compilation failed: " << e.what();
 } catch (SMLCompiler::UnsupportedException const& e) {
   std::cerr << "Unsupported: " << e.what();
