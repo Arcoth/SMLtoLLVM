@@ -8,6 +8,7 @@
 #include <llvm/IR/Module.h>
 
 #include <set>
+#include <map>
 
 namespace SMLCompiler {
 
@@ -15,6 +16,14 @@ using namespace SMLNJInterface;
 using namespace llvm;
 
 std::set<PLambda::lvar> freeVars( PLambda::lexp const& exp );
+
+
+struct Occurrence {
+  PLambda::lexp* enclosing_exp; // the expression that immediately ENCLOSES the occurrence.
+  PLambda::lexp* holding_exp; // the expression that IS the occurrence.
+};
+
+std::multimap<PLambda::lvar, Occurrence> freeVarOccurrences( PLambda::lexp& exp, PLambda::lexp* enclosing);
 
 inline const int heapAddressSpace = 1;
 

@@ -6,6 +6,7 @@
 #include <llvm/Support/raw_ostream.h>
 
 #include <iostream>
+#include <optional>
 #include <iterator>
 
 namespace SMLCompiler {
@@ -14,6 +15,100 @@ using std::get;
 using std::get_if;
 
 using namespace PLambda;
+
+auto freeVarOccurrences(vector<lexp>& exps, lexp* enclosing) {
+  std::multimap<lvar, Occurrence> s;
+  for (auto& e : exps)
+    s = set_union(s, freeVarOccurrences(e, enclosing));
+  return s;
+}
+
+
+std::multimap<lvar, Occurrence> freeVarOccurrences( lexp& exp, lexp* enclosing) {
+  switch(exp.index()) {
+    case INT: case INT32: case WORD:
+    case WORD32: case REAL: case PRIM:
+    case STRING: case GENOP:
+      return {};
+
+    case VAR: return {{get<VAR>(exp), {.enclosing_exp = enclosing, .holding_exp = &exp}}};
+
+    case FN: {
+      auto& fn = get<FN>(exp);
+      return set_subtract(freeVarOccurrences(get<dlexp>(fn), &exp), {get<lvar>(fn)});
+    }
+    case FIX: {
+      auto& [decls, in] = get<FIX>(exp);
+      std::multimap<lvar, Occurrence> freevars;
+      std::set<lvar> params;
+      for (auto& [var, _, body] : decls) {
+        freevars = set_union(freevars, freeVarOccurrences(body, &exp));
+        params.insert(var);
+      }
+      return set_subtract(freevars, params);
+    }
+    case APP: {
+      auto& [fun, arg] = get<APP>(exp);
+      return set_union(freeVarOccurrences(fun, &exp), freeVarOccurrences(arg, &exp));
+    }
+    case LET: {
+      auto& [var, assign, in] = get<LET>(exp);
+      return set_union(freeVarOccurrences(assign, &exp), set_subtract(freeVarOccurrences(in, &exp), {var}));
+    }
+    case SWITCH: {
+      auto& [arg, matches, default_] = get<SWITCH>(exp);
+      auto s = freeVarOccurrences(arg, &exp);
+      for (auto& [constructor, target] : matches) {
+        auto exp_vars = freeVarOccurrences(target, &exp);
+        if (constructor.index() == DATAcon)
+          exp_vars = set_subtract(exp_vars, {get<lvar>(get<DATAcon>(constructor))});
+        s = set_union(s, exp_vars);
+      }
+      if (default_)
+        s = set_union(s, freeVarOccurrences(default_.value(), &exp));
+
+      return s;
+    }
+    case CON: {
+      using namespace Access;
+
+      auto& [constr, tycs, arg] = get<CON>(exp);
+      auto fvs = freeVarOccurrences(arg, &exp);
+      // Compute any references to lambda-bound variables. Ignore SUSPs for now,.
+      if (auto exn = get_if<EXN>(&get<Access::conrep>(constr))) {
+        while (auto next = get_if<PATH>(exn))
+          exn = &next->first;
+        if (auto v = get_if<LVAR>(exn))
+          fvs.emplace(*v, Occurrence{.enclosing_exp = &exp, .holding_exp = nullptr});
+      }
+      return fvs;
+    }
+
+    //! Exceptions are not supported yet; ignore raises and handles.
+    case RAISE:  return {};
+
+
+    // Simple compositional cases:
+
+    case HANDLE: return freeVarOccurrences(get<0>(    get<HANDLE>(exp)), &exp);
+    case ETAG:   return freeVarOccurrences(get<dlexp>(  get<ETAG>(exp)), &exp);
+    case SELECT: return freeVarOccurrences(get<dlexp>(get<SELECT>(exp)), &exp);
+    case PACK:   return freeVarOccurrences(get<dlexp>(  get<PACK>(exp)), &exp);
+    case WRAP:   return freeVarOccurrences(get<dlexp>(  get<WRAP>(exp)), &exp);
+    case UNWRAP: return freeVarOccurrences(get<dlexp>(get<UNWRAP>(exp)), &exp);
+    case TFN:    return freeVarOccurrences(get<dlexp>(   get<TFN>(exp)), &exp);
+    case TAPP:   return freeVarOccurrences(get<dlexp>(  get<TAPP>(exp)), &exp);
+
+
+    case RECORD:  return freeVarOccurrences( get<RECORD>(exp), &exp);
+    case SRECORD: return freeVarOccurrences(get<SRECORD>(exp), &exp);
+    case VECTOR: return freeVarOccurrences(get<0>(get<VECTOR>(exp)), &exp);
+
+
+    default:
+      throw UnsupportedException{"Unsupported lambda type " + std::to_string(exp.index())};
+  }
+}
 
 std::set<lvar> freeVars( vector<lexp> const& exps ) {
   std::set<lvar> s;
@@ -61,6 +156,8 @@ std::set<lvar> freeVars( lexp const& exp ) {
           exp_vars = set_subtract(exp_vars, {get<lvar>(get<DATAcon>(constructor))});
         s = set_union(s, exp_vars);
       }
+      if (default_)
+        s = set_union(s, freeVars(default_.value()));
       return s;
     }
     case CON: {
@@ -184,27 +281,36 @@ Value* unboxInt(IRBuilder<>& builder, Value* x) {
                             2, "unboxed_int");
 }
 
+struct AstContext {
+  bool isBodyOfFixpoint;
+  PLambda::lvar fixPointVariable;
+  bool isFinalExpression;
+};
+
 Value* compile(IRBuilder<>& builder,
-               lexp const& expression,
+               lexp& expression,
                std::map<PLambda::lvar, Value*> const& variables,
-               SMLTranslationUnit&);
+               SMLTranslationUnit&,
+               AstContext astContext);
 
 // Here, exp is a RCD of one or two arguments to the operator.
 Value* compile_primop(IRBuilder<>& builder,
                       Primop::primop const& op,
-                      lexp const& exp,
+                      lexp& exp,
                       std::map<PLambda::lvar, Value*> const& variables,
-                      SMLTranslationUnit& unit) {
+                      SMLTranslationUnit& unit,
+                      AstContext astContext) {
   using namespace Primop;
   auto& module = *builder.GetInsertBlock()->getModule();
 
   std::vector<std::function<Value*()>> arg_values;
   std::function<Value*()> arg_value;
+  astContext.isFinalExpression = false;
   if (auto rcd = get_if<RECORD>(&exp))
     for (auto& e : *rcd)
-      arg_values.push_back([&] {return compile(builder, e, variables, unit);});
+      arg_values.push_back([&] {return compile(builder, e, variables, unit, astContext);});
   else {
-    auto v = compile(builder, exp, variables, unit);
+    auto v = compile(builder, exp, variables, unit, astContext);
     arg_value = [v] {return v;};
     if (!v->getType()->isIntegerTy()) {
       auto v_ptr = builder.CreatePointerCast(v, genericPointerType(module.getContext())->getPointerTo(heapAddressSpace), "primop_rcd_ptr");
@@ -383,13 +489,16 @@ void insertAbort(IRBuilder<>& builder) {
 }
 
 Value* compile(IRBuilder<>& builder,
-               lexp const& expression,
+               lexp& expression,
                std::map<PLambda::lvar, Value*> const& variables,
-               SMLTranslationUnit& unit) {
+               SMLTranslationUnit& unit,
+               AstContext astContext) {
   auto& module = *builder.GetInsertBlock()->getModule();
   auto& ctx = module.getContext();
-  auto recurse = [&] (lexp const& e) {
-    return compile(builder, e, variables, unit);
+  auto recurse = [&, astContext] (lexp& e, std::optional<bool> last = std::nullopt) mutable {
+    if (last.has_value())
+      astContext.isFinalExpression = last.value();
+    return compile(builder, e, variables, unit, astContext);
   };
   switch (expression.index()) {
     case VAR: {
@@ -421,7 +530,7 @@ Value* compile(IRBuilder<>& builder,
       auto wrapper_type = StructType::create({genericFunctionType(ctx)->getPointerTo(),
                                               env_array_type}, F->getName().str() + "Wrapper");
 
-      auto aggregate_v = builder.CreateInsertValue(UndefValue::get(wrapper_type), F, {0}, "funptrslot"); // store function pointer...
+      auto aggregate_v = builder.CreateInsertValue(UndefValue::get(wrapper_type), F, {0}, "fun_ptr_slot"); // store function pointer...
       {
         unsigned index = 0;
         for (auto var : free_vars) {
@@ -449,7 +558,12 @@ Value* compile(IRBuilder<>& builder,
       }
       inner_variables[fn_var] = F->arg_begin(); // first argument is the argument
 
-      if (auto retv = compile(fun_builder, fn_body, inner_variables, unit))
+      if (astContext.isBodyOfFixpoint)
+        astContext.isBodyOfFixpoint = false;
+      else
+        astContext.fixPointVariable = -1;
+      astContext.isFinalExpression = true;
+      if (auto retv = compile(fun_builder, fn_body, inner_variables, unit, astContext))
         fun_builder.CreateRet(boxInt(fun_builder, retv));
 
       return builder.CreatePointerCast(memory, genericPointerType(ctx), "clos_ptr_cast");
@@ -459,37 +573,68 @@ Value* compile(IRBuilder<>& builder,
       if (body_exp.get().index() == VAR        // If the body is a variable,
        && get<VAR>(body_exp.get()) == let_var) // and if that variable is the LET variable,
           return recurse(assign_exp);    // just return the assignment.
-      auto assign_value = recurse(assign_exp);
+
+      /*
+        Perform inlining. If a function is only called once, substitute the function body as a let-expression.
+      */
+      if (auto function_exp = get_if<FN>(&assign_exp)) {
+        auto freeOccursInLet = freeVarOccurrences(body_exp, &expression);
+        auto [occur_first, occur_last] = freeOccursInLet.equal_range(let_var);
+        if (std::distance(occur_first, occur_last) == 1) {
+          auto [var, occurrence] = *occur_first;
+          auto app_exp = get_if<APP>(occurrence.enclosing_exp);
+          if (app_exp && &app_exp->first.get() == occurrence.holding_exp) {
+            std::cout << "Found a single application of v" << var << '\n';
+            // Replace the application with a LET fnparam = argument IN fnbody END
+            auto argument = get<1>(*app_exp).get();
+            occurrence.enclosing_exp->emplace<LET>(get<0>(*function_exp),
+                                                   argument,
+                                                   get<2>(*function_exp));
+            return compile(builder, body_exp, variables, unit, astContext);
+          }
+        }
+      }
+
+      auto assign_value = recurse(assign_exp, false);
       auto inner_vars = variables;
       inner_vars.emplace(let_var, assign_value);
-      return compile(builder, body_exp, inner_vars, unit);
+      return compile(builder, body_exp, inner_vars, unit, astContext);
     }
     case APP: {
       auto& [fn_exp, arg_exp] = get<APP>(expression);
       // Primitive operations require special treatment:
       if (fn_exp.get().index() == PRIM) {
         auto& [prim_oper,_1, _2] = get<PRIM>(fn_exp.get());
-        return compile_primop(builder, prim_oper, arg_exp, variables, unit);
+        return compile_primop(builder, prim_oper, arg_exp, variables, unit, astContext);
       }
+
       // The remaining cases are arbitrary function calls.
-      else {
-        Value* arg_val = recurse(arg_exp);
+      Value* arg_val = recurse(arg_exp);
 
-        Type* fun_type = nullptr;
-        if ( arg_val->getType()->isIntegerTy()) {
-          fun_type = intFunctionType(module);
-          arg_val = boxIntNoCast(builder, arg_val);
-        }
-        else
-          fun_type = genericFunctionType(ctx);
-
-        auto fn_v = recurse(fn_exp);
-        auto closure_ptr = builder.CreatePointerCast(fn_v, genericPointerType(ctx)->getPointerTo(heapAddressSpace), "closure_ptr");
-        auto fn_ptr = builder.CreateLoad(builder.CreatePointerCast(closure_ptr, fun_type->getPointerTo()->getPointerTo(heapAddressSpace), "fun_ptr_ptr"), "fun_ptr");
-        auto env_v = builder.CreateConstGEP1_32(closure_ptr, 1, "env_ptr");
-
-        return builder.CreateCall(fn_ptr, {arg_val, env_v});
+      Type* fun_type = nullptr;
+      if ( arg_val->getType()->isIntegerTy()) {
+        fun_type = intFunctionType(module);
+        arg_val = boxIntNoCast(builder, arg_val);
       }
+      else
+        fun_type = genericFunctionType(ctx);
+
+//      // Recursive call?
+//      if (fn_exp.get().index() == VAR && get<VAR>(fn_exp.get()) == astContext.fixPointVariable) {
+//
+//        std::cout << "Replacing app of " << astContext.fixPointVariable << "\n";
+//        std::cout << "Application is final: " << astContext.isFinalExpression << '\n';
+//        auto recursive_function = builder.GetInsertBlock()->getParent();
+//        return builder.CreateCall( builder.CreatePointerCast(recursive_function, fun_type->getPointerTo(), "fun_ptr"),
+//                                   {arg_val, recursive_function->arg_begin()+1} );
+//      }
+
+      auto fn_v = recurse(fn_exp);
+      auto closure_ptr = builder.CreatePointerCast(fn_v, genericPointerType(ctx)->getPointerTo(heapAddressSpace), "closure_ptr");
+      auto fn_ptr = builder.CreateLoad(builder.CreatePointerCast(closure_ptr, fun_type->getPointerTo()->getPointerTo(heapAddressSpace), "fun_ptr_ptr"), "fun_ptr");
+      auto env_v = builder.CreateConstGEP1_32(closure_ptr, 1, "env_ptr");
+
+      return builder.CreateCall(fn_ptr, {arg_val, env_v});
     }
     case FIX: {
       /*
@@ -506,7 +651,7 @@ Value* compile(IRBuilder<>& builder,
           //inner_vars[var] = ConstantPointerNull::get(genericPointerType(ctx));
           // Use some specific garbage for this scenario (address 12):
           inner_vars[var] = builder.CreateIntToPtr(ConstantInt::get(genericIntType(module), 0xDEADBEEF), genericPointerType(ctx));
-        closure_prs.push_back(compile(builder, fn, inner_vars, unit));
+        closure_prs.push_back(compile(builder, fn, inner_vars, unit, {true, var, false}));
       }
       // Adjust the pointers in all environments to refer to the allocated closures.
       std::size_t decl_index = 0;
@@ -530,7 +675,7 @@ Value* compile(IRBuilder<>& builder,
       auto inner_vars = variables;
       for (std::size_t i = 0; i < decls.size(); ++i)
         inner_vars[get<lvar>(decls[i])] = closure_prs[i];
-      return compile(builder, exp, inner_vars, unit);
+      return compile(builder, exp, inner_vars, unit, astContext);
     }
 
     case SWITCH: {
@@ -542,13 +687,18 @@ Value* compile(IRBuilder<>& builder,
       auto result = builder.CreateAlloca(genericPointerType(ctx), nullptr, "switch_result_ptr");
       default_builder.CreateStore(ConstantPointerNull::get(genericPointerType(ctx)), result);
       if (default_case) {
-        default_builder.CreateStore(compile(default_builder, default_case.value(), variables, unit), result);
-        default_builder.CreateBr(exit_block);
+        auto default_v = compile(default_builder, default_case.value(), variables, unit, astContext);
+        if (default_v) {
+          default_builder.CreateStore(default_v, result);
+          default_builder.CreateBr(exit_block);
+        }
+        else
+          default_builder.CreateUnreachable();
       }
       else
         insertAbort(default_builder);
 
-      auto switched_v = recurse(switched_exp);
+      auto switched_v = recurse(switched_exp, false); // the switched expression is not final, but the cases might be
       auto switch_inst = builder.CreateSwitch(extractTag(builder, unit, switched_v, cases.at(0).first),
                                               default_, cases.size());
       for (auto& [constructor, exp] : cases) {
@@ -570,8 +720,8 @@ Value* compile(IRBuilder<>& builder,
           }
         }
 
+        Value* case_result = compile(case_builder, exp, vars, unit, astContext);
         // If the result is an integer, cast the store.
-        Value* case_result = compile(case_builder, exp, vars, unit);
         if (case_result->getType()->isIntegerTy())
           case_builder.CreateStore(boxIntNoCast(case_builder, case_result),
                                    case_builder.CreatePointerCast(result, genericIntType(module)->getPointerTo()));
@@ -591,6 +741,7 @@ Value* compile(IRBuilder<>& builder,
         case symbol_rep::CONSTANT:
           return boxInt(builder, symrep.value);
         case symbol_rep::TAGGED: {
+          astContext.isFinalExpression = false;
           auto rcd = recurse(argument);
           builder.CreateStore(symrep.value, getTagPtrFromRecordPtr(builder, rcd));
           return builder.CreatePointerCast(rcd, genericPointerType(ctx));
@@ -604,6 +755,7 @@ Value* compile(IRBuilder<>& builder,
 
     case RECORD: {
       std::vector<Value*> values;
+      astContext.isFinalExpression = false;
       for (auto& e : get<RECORD>(expression))
         values.push_back(recurse(e));
       auto ptr = record(builder, values);
@@ -611,6 +763,7 @@ Value* compile(IRBuilder<>& builder,
     }
     case SRECORD: {
       std::vector<Value*> values;
+      astContext.isFinalExpression = false;
       for (auto& e : get<SRECORD>(expression))
         values.push_back(recurse(e));
       auto ptr = record(builder, values);
@@ -653,7 +806,7 @@ void compile_top(SMLTranslationUnit& unit, Module& module) {
 
   BasicBlock *BB = BasicBlock::Create(ctx, "entry", exportFn);
   IRBuilder<> builder(BB);
-  auto v = compile(builder, unit.exportedLetExpr, {}, unit);
+  auto v = compile(builder, unit.exportedLetExpr, {}, unit, {});
   builder.CreateStore(ConstantInt::get(Type::getInt32Ty(ctx), 0x777), getTagPtrFromRecordPtr(builder, v));
   builder.CreateRet(v);
 }
