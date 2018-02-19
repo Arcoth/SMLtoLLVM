@@ -19,7 +19,7 @@ template <typename Set, typename C>
 Set set_subtract(Set s, C const& t) {
   for (auto& x : t)
     s.erase(x);
-  return move(s);
+  return s;
 }
 template <typename Set1, typename T>
 Set1 set_subtract(Set1 s, std::initializer_list<T> t) {
