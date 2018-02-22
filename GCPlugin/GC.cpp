@@ -30,7 +30,7 @@ uint64_t sizeLeft = heapSize;
 heapUnit *heapBase,
          *heapPtr; // points at the first free spot in the heap
 
-uint64_t largeHeapSize = 10'000'000;
+uint64_t largeHeapSize = 20'000'000;
 uint64_t largeSizeLeft = largeHeapSize;
 heapUnit *largeHeapBase,
          *largeHeapPtr,
@@ -116,7 +116,7 @@ void relocate(uint8_t* const stackPtr, heapUnit** slot,
 #endif // GC_DEBUG
               )
 {
-  if (*slot == nullptr) // e.g. empty records yield null pointers.
+  if (*slot == nullptr) // e.g. empty records, untagged data constructors, etc.
     return;
 
   auto origin = determineSource(*slot);
@@ -189,17 +189,23 @@ void walkStack(uint8_t* stackPtr, F slotHandler) {
   intptr_t retAddr = *((intptr_t*)stackPtr);
   stackPtr += sizeof(void*); // step into frame
   frame_info_t* frame = lookup_return_address(table, retAddr);
+  std::vector<heapUnit*> lastPointers;
+
 
   while(frame != NULL) {
     for(uint16_t i = 0; i < frame->numSlots; i++) {
       pointer_slot_t ptrSlot = frame->slots[i];
-      if(ptrSlot.kind >= 0) {
-        // we do not use derived pointers
-        assert(false && "unexpected derived pointer\n");
-      }
-
       heapUnit** ptr = (heapUnit**)(stackPtr + ptrSlot.offset);
+      std::ptrdiff_t diff = 0;
+      if(ptrSlot.kind >= 0) {
+        diff = *ptr - lastPointers.at(ptrSlot.kind);
+        // we do not use derived pointers
+        // assert(false && "unexpected derived pointer\n");
+      }
+      lastPointers.push_back(*ptr);
+      *ptr -= diff;
       slotHandler(ptr);
+      *ptr += diff;
     }
 
     // move to next frame. seems we have to add one pointer size to
@@ -220,9 +226,8 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap, Heap target, heapUnit*& newheapp
     table = generate_table(StackMapPtr, 0.5);
 
   walkStack(stackPtr, [&] (heapUnit** ptr) {
-    if (((intptr_t)*ptr & 0b11) == 0) {
+    if (((intptr_t)*ptr & 0b11) == 0)
       relocate(originalStackPtr, ptr, newheapptr, size_left, heap, target);
-    }
   });
 }
 
