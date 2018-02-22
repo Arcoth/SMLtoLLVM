@@ -609,9 +609,9 @@ Value* compile(IRBuilder<>& builder,
       }
 
       // The remaining cases are arbitrary function calls.
-      Value* arg_val = recurse(arg_exp);
+      Value* arg_val = recurse(arg_exp, false);
 
-      Type* fun_type = nullptr;
+      FunctionType* fun_type = nullptr;
       if ( arg_val->getType()->isIntegerTy()) {
         fun_type = intFunctionType(module);
         arg_val = boxIntNoCast(builder, arg_val);
@@ -619,18 +619,22 @@ Value* compile(IRBuilder<>& builder,
       else
         fun_type = genericFunctionType(ctx);
 
-//      // Recursive call?
-//      if (fn_exp.get().index() == VAR && get<VAR>(fn_exp.get()) == astContext.fixPointVariable) {
-//
-//        std::cout << "Replacing app of " << astContext.fixPointVariable << "\n";
-//        std::cout << "Application is final: " << astContext.isFinalExpression << '\n';
-//        auto recursive_function = builder.GetInsertBlock()->getParent();
-//        return builder.CreateCall( builder.CreatePointerCast(recursive_function, fun_type->getPointerTo(), "fun_ptr"),
-//                                   {arg_val, recursive_function->arg_begin()+1} );
-//      }
+      // Recursive call?
+      if (fn_exp.get().index() == VAR
+       && get<VAR>(fn_exp.get()) == astContext.fixPointVariable
+       && astContext.isFinalExpression) {
+        std::cout << "Replacing app of " << astContext.fixPointVariable << "\n";
+        auto recursive_function = builder.GetInsertBlock()->getParent();
 
-      auto fn_v = recurse(fn_exp);
-      auto closure_ptr = builder.CreatePointerCast(fn_v, genericPointerType(ctx)->getPointerTo(heapAddressSpace), "closure_ptr");
+        auto result = builder.CreateCall(recursive_function,
+                                         {arg_val, recursive_function->arg_begin()+1}, "recursive_call");
+        result->mutateFunctionType(fun_type);
+        builder.CreateRet(result);
+        return nullptr;
+      }
+
+      auto fn_v = recurse(fn_exp, false);
+      auto closure_ptr = builder.CreatePointerCast(fn_v, genericPointerType(ctx)->getPointerTo(), "closure_ptr");
       auto fn_ptr = builder.CreateLoad(builder.CreatePointerCast(closure_ptr, fun_type->getPointerTo()->getPointerTo(heapAddressSpace), "fun_ptr_ptr"), "fun_ptr");
       auto env_v = builder.CreateConstGEP1_32(closure_ptr, 1, "env_ptr");
 
@@ -684,15 +688,18 @@ Value* compile(IRBuilder<>& builder,
       auto exit_block = BasicBlock::Create(ctx, "continue", func);
       BasicBlock* default_ = BasicBlock::Create(ctx, "default", func, exit_block);
       IRBuilder<> default_builder(default_);
-      auto result = builder.CreateAlloca(genericPointerType(ctx), nullptr, "switch_result_ptr");
-      default_builder.CreateStore(ConstantPointerNull::get(genericPointerType(ctx)), result);
+
+      std::vector<std::pair<std::unique_ptr<IRBuilder<>>, Value*>> results;
+
+      //auto result = builder.CreateAlloca(genericPointerType(ctx), nullptr, "switch_result_ptr");
+      //default_builder.CreateStore(ConstantPointerNull::get(genericPointerType(ctx)), result);
       if (default_case) {
         auto default_v = compile(default_builder, default_case.value(), variables, unit, astContext);
         if (default_v) {
-          default_builder.CreateStore(default_v, result);
+          results.emplace_back(&default_builder, default_v);
           default_builder.CreateBr(exit_block);
         }
-        else
+        else if (default_->getTerminator() == nullptr) // no terminator
           default_builder.CreateUnreachable();
       }
       else
@@ -705,13 +712,13 @@ Value* compile(IRBuilder<>& builder,
         auto case_bb = BasicBlock::Create(ctx, "case", func, exit_block);
         switch_inst->addCase(getTag(module, unit, constructor), case_bb);
 
-        IRBuilder<> case_builder(case_bb);
+        auto case_builder = std::make_unique<IRBuilder<>>(case_bb);
         auto vars = variables;
         if (auto datacon = get_if<DATAcon>(&constructor)) {
           auto [sym, var] = *datacon;
           switch (unit.symbolRepresentation.at(sym).type) {
             case symbol_rep::TAGGED:
-              vars[var] = case_builder.CreatePointerCast(switched_v, genericPointerType(ctx)->getPointerTo(heapAddressSpace));
+              vars[var] = case_builder->CreatePointerCast(switched_v, genericPointerType(ctx)->getPointerTo(heapAddressSpace));
               break;
             case symbol_rep::UNTAGGED:
               vars[var] = switched_v;
@@ -720,18 +727,41 @@ Value* compile(IRBuilder<>& builder,
           }
         }
 
-        Value* case_result = compile(case_builder, exp, vars, unit, astContext);
-        // If the result is an integer, cast the store.
-        if (case_result->getType()->isIntegerTy())
-          case_builder.CreateStore(boxIntNoCast(case_builder, case_result),
-                                   case_builder.CreatePointerCast(result, genericIntType(module)->getPointerTo()));
-        else
-          case_builder.CreateStore(case_result, result);
+        // Result is zero when there is an early return within the produced code.
+        if (Value* case_result = compile(*case_builder, exp, vars, unit, astContext)) {
+          results.emplace_back(std::move(case_builder), case_result);
+//          // If the result is an integer, cast the store.
+//          if (case_result->getType()->isIntegerTy())
+//            case_builder.CreateStore(boxIntNoCast(case_builder, case_result),
+//                                     case_builder.CreatePointerCast(result, genericIntType(module)->getPointerTo()));
+//          else
+//            case_builder.CreateStore(case_result, result);
 
-        case_builder.CreateBr(exit_block);
+        }
       }
+
       builder.SetInsertPoint(exit_block);
-      return builder.CreateLoad(result, "switch_result");
+
+      PHINode* result_node;
+
+      if (std::any_of(begin(results), end(results), [] (auto& pair) {
+        return pair.second->getType()->isIntegerTy();
+      })) {
+        result_node = builder.CreatePHI(genericIntType(module), results.size(), "switch_result");
+        for (auto& [result_builder, result] : results) {
+          result_node->addIncoming(unboxInt(*result_builder, result), result_builder->GetInsertBlock());
+          result_builder->CreateBr(exit_block);
+        }
+      }
+      else {
+        result_node = builder.CreatePHI(genericPointerType(ctx), results.size(), "switch_result");
+        for (auto& [result_builder, result] : results) {
+          result_node->addIncoming(result, result_builder->GetInsertBlock());
+          result_builder->CreateBr(exit_block);
+        }
+      }
+
+      return result_node;
     }
 
     case CON: {
@@ -741,8 +771,7 @@ Value* compile(IRBuilder<>& builder,
         case symbol_rep::CONSTANT:
           return boxInt(builder, symrep.value);
         case symbol_rep::TAGGED: {
-          astContext.isFinalExpression = false;
-          auto rcd = recurse(argument);
+          auto rcd = recurse(argument, false);
           builder.CreateStore(symrep.value, getTagPtrFromRecordPtr(builder, rcd));
           return builder.CreatePointerCast(rcd, genericPointerType(ctx));
         }
