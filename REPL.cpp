@@ -40,7 +40,21 @@ void performOptimisationPasses(Module& mod) {
   fpm.add(createGVNPass());
   // Simplify the control flow graph (deleting unreachable blocks, etc).
   fpm.add(createCFGSimplificationPass());
+  fpm.add(createPromoteMemoryToRegisterPass());
   fpm.add(createTailCallEliminationPass());
+
+  fpm.doInitialization();
+
+  for (auto& fun : mod) {
+    outs() << "Performing optimisation passes on " << fun.getName() << '\n';
+    fpm.run(fun);
+  }
+}
+
+void performStatepointsPass(Module& mod) {
+  auto& ctx = mod.getContext();
+
+  legacy::FunctionPassManager fpm(&mod);
 
   // Add a preliminary safepoint poller
   auto safepoint_poll =
@@ -53,19 +67,14 @@ void performOptimisationPasses(Module& mod) {
   safepoint_builder.CreateRetVoid();
 
   fpm.add(createPlaceSafepointsPass());
-
   fpm.doInitialization();
 
   for (auto& fun : mod) {
-    if (fun.getName() == "gc.safepoint_poll")
-      continue;
     fun.setGC("statepoint-example");
-    outs() << "Performing optimisation and GC passes on " << fun.getName() << '\n';
+    outs() << "Performing GC pass on " << fun.getName() << '\n';
     fpm.run(fun);
   }
-}
 
-void performStatepointsPass(Module& mod) {
   legacy::PassManager pm;
   pm.add(createRewriteStatepointsForGCPass());
   pm.run(mod);
@@ -240,7 +249,7 @@ int execute(Module* mod, std::size_t functionIndex, void const* closLengthByFun_
 
   auto start_time = std::chrono::high_resolution_clock::now();
   auto res = (genericIntTypeNative)((genericFunctionTypeNative*) last_fnc[0])
-               ((genericPointerTypeNative)((200000 << 2) + 1), last_fnc+1);
+               ((genericPointerTypeNative)((2000000 << 2) + 1), last_fnc+1);
   res >>= 2;
   auto result_time = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double> elapsed_seconds = result_time-start_time;
