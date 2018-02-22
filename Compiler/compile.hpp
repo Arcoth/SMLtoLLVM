@@ -52,7 +52,7 @@ inline auto intFunctionType(Module& m) {
   auto& ctx = m.getContext();
   return FunctionType::get(genericPointerType(ctx),   // the return value
                            {genericIntType(m),  // the argument
-                            genericPointerType(ctx)->getPointerTo(heapAddressSpace)}, // the environment.
+                            genericPointerType(ctx)->getPointerTo()}, // the environment.
                            false); // not variadic
 }
 
@@ -60,7 +60,7 @@ inline auto intFunctionType(Module& m) {
 inline auto genericFunctionType(LLVMContext& ctx) {
   return FunctionType::get(genericPointerType(ctx),   // the return value
                            {genericPointerType(ctx),  // the argument
-                            genericPointerType(ctx)->getPointerTo(heapAddressSpace)}, // the environment.
+                            genericPointerType(ctx)->getPointerTo()}, // the environment.
                            false); // not variadic
 }
 
