@@ -687,23 +687,22 @@ Value* compile(IRBuilder<>& builder,
       auto func = builder.GetInsertBlock()->getParent();
       auto exit_block = BasicBlock::Create(ctx, "continue", func);
       BasicBlock* default_ = BasicBlock::Create(ctx, "default", func, exit_block);
-      IRBuilder<> default_builder(default_);
+      auto default_builder = std::make_unique<IRBuilder<>>(default_);
 
       std::vector<std::pair<std::unique_ptr<IRBuilder<>>, Value*>> results;
 
       //auto result = builder.CreateAlloca(genericPointerType(ctx), nullptr, "switch_result_ptr");
       //default_builder.CreateStore(ConstantPointerNull::get(genericPointerType(ctx)), result);
       if (default_case) {
-        auto default_v = compile(default_builder, default_case.value(), variables, unit, astContext);
+        auto default_v = compile(*default_builder, default_case.value(), variables, unit, astContext);
         if (default_v) {
-          results.emplace_back(&default_builder, default_v);
-          default_builder.CreateBr(exit_block);
+          results.emplace_back(std::move(default_builder), default_v);
         }
         else if (default_->getTerminator() == nullptr) // no terminator
-          default_builder.CreateUnreachable();
+          default_builder->CreateUnreachable();
       }
       else
-        insertAbort(default_builder);
+        insertAbort(*default_builder);
 
       auto switched_v = recurse(switched_exp, false); // the switched expression is not final, but the cases might be
       auto switch_inst = builder.CreateSwitch(extractTag(builder, unit, switched_v, cases.at(0).first),
@@ -787,6 +786,8 @@ Value* compile(IRBuilder<>& builder,
       astContext.isFinalExpression = false;
       for (auto& e : get<RECORD>(expression))
         values.push_back(recurse(e));
+      if (values.empty())
+        return ConstantPointerNull::get(genericPointerType(ctx));
       auto ptr = record(builder, values);
       return builder.CreatePointerCast(ptr, genericPointerType(ctx), "rcd_ptr");
     }
