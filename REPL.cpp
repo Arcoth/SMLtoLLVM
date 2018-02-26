@@ -13,6 +13,7 @@
 #include <llvm/IR/IRBuilder.h>
 
 #include <llvm/IR/LegacyPassManager.h>
+#include <llvm/Transforms/IPO.h>
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Scalar/GVN.h>
 
@@ -27,7 +28,11 @@ namespace SMLCompiler {
 using namespace llvm;
 
 void performOptimisationPasses(Module& mod) {
-  auto& ctx = mod.getContext();
+
+  legacy::PassManager pm;
+  pm.add(createFunctionInliningPass());
+  pm.add(createInternalizePass());
+  pm.run(mod);
 
   // Create a new pass manager attached to it.
   legacy::FunctionPassManager fpm(&mod);
@@ -49,6 +54,7 @@ void performOptimisationPasses(Module& mod) {
     outs() << "Performing optimisation passes on " << fun.getName() << '\n';
     fpm.run(fun);
   }
+
 }
 
 void performStatepointsPass(Module& mod) {
@@ -132,7 +138,8 @@ Value* insertAllocation(LLVMContext& ctx, IRBuilder<>& builder, Function* fun, F
    heap base and size scalars linked in by the runtime. */
 void addGCSymbols(Module& mod) {
   auto& ctx = mod.getContext();
-  auto heap = new GlobalVariable(mod, Type::getInt64PtrTy(ctx),
+  auto variable_type = Type::getInt64Ty(ctx)->getPointerTo(heapAddressSpace);
+  auto heap = new GlobalVariable(mod, Type::getInt64Ty(ctx)->getPointerTo(heapAddressSpace),
                      false, // constant?
                      GlobalVariable::ExternalLinkage,
                      nullptr, // no initialiser
@@ -151,7 +158,7 @@ void addGCSymbols(Module& mod) {
                      0, // not to be treated as a GC root!
                      true); // externally initialised
 
-  auto mut_heap = new GlobalVariable(mod, Type::getInt64PtrTy(ctx),
+  auto mut_heap = new GlobalVariable(mod, variable_type,
                      false, // constant?
                      GlobalVariable::ExternalLinkage,
                      nullptr, // no initialiser
@@ -175,7 +182,7 @@ void addGCSymbols(Module& mod) {
   auto collect_mut = Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
                    invokeMutableHeapCollection, &mod);
 
-  auto type = FunctionType::get(Type::getVoidTy(ctx)->getPointerTo(heapAddressSpace),
+  auto type = FunctionType::get(genericPointerType(ctx),
                                 {Type::getInt64Ty(ctx)}, false);
 
   auto immutable_fun = Function::Create(type, GlobalVariable::InternalLinkage,
@@ -236,6 +243,9 @@ int execute(Module* mod, std::size_t functionIndex, void const* closLengthByFun_
     errs() << "Could not find GC initialisation function!";
     return EXIT_FAILURE;
   }
+
+  //! Start measuring at the GC initialisation.
+  auto start_time = std::chrono::high_resolution_clock::now();
   gc_init();
 
   // Get the structured record
@@ -247,9 +257,8 @@ int execute(Module* mod, std::size_t functionIndex, void const* closLengthByFun_
   auto last_fnc = (genericPointerTypeNative*)lambda[functionIndex+1];
 
 
-  auto start_time = std::chrono::high_resolution_clock::now();
   auto res = (genericIntTypeNative)((genericFunctionTypeNative*) last_fnc[0])
-               ((genericPointerTypeNative)((2000000 << 2) + 1), last_fnc+1);
+               ((genericPointerTypeNative)((100'000'000 << 2) + 1), last_fnc+1);
   res >>= 2;
   auto result_time = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double> elapsed_seconds = result_time-start_time;
