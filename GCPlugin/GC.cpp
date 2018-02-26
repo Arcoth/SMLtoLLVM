@@ -16,7 +16,8 @@
 #include <unordered_map>
 #include <vector>
 
-#define GC_DEBUG 1
+// #define GC_MEMSET
+#define GC_DEBUG_LOG_LVL 0
 
 using namespace SMLCompiler::GC;
 
@@ -30,7 +31,7 @@ uint64_t sizeLeft = heapSize;
 heapUnit *heapBase,
          *heapPtr; // points at the first free spot in the heap
 
-uint64_t largeHeapSize = 20'000'000;
+uint64_t largeHeapSize = 500'000'000;
 uint64_t largeSizeLeft = largeHeapSize;
 heapUnit *largeHeapBase,
          *largeHeapPtr,
@@ -60,8 +61,10 @@ extern "C" void init() {
   heapBase = heapPtr = (heapUnit*)malloc(heapSize * sizeof(heapUnit));
   referenceHeapBase = referenceHeapPtr = (heapUnit*)malloc(referenceHeapSize * sizeof(heapUnit));
   largeHeapBase = largeHeapPtr = (heapUnit*)malloc(largeHeapSize * sizeof(heapUnit));
+#ifdef GC_MEMSET
   memset(largeHeapBase, 0x77, largeHeapSize * sizeof(heapUnit));
   memset(heapBase, 0x77, heapSize * sizeof(heapUnit));
+#endif
   auxLargeHeap = (heapUnit*)malloc(largeHeapSize * sizeof(heapUnit));
   std::cout << "Initialised GC!\n";
 }
@@ -108,12 +111,13 @@ uint64_t getRecordLength(uint64_t tag) {
 
 void cleanup_heap(uint8_t* stackPtr, Heap heap);
 
+__attribute__((hot))
 void relocate(uint8_t* const stackPtr, heapUnit** slot,
               heapUnit*& newHeapPtr, std::size_t& units_left,
               Heap cleanup_target, Heap reloc_target
-#if GC_DEBUG >= 2
+#if GC_DEBUG_LOG_LVL >= 2
               , std::string indent = ""
-#endif // GC_DEBUG
+#endif // GC_DEBUG_LOG_LVL
               )
 {
   if (*slot == nullptr) // e.g. empty records, untagged data constructors, etc.
@@ -121,10 +125,10 @@ void relocate(uint8_t* const stackPtr, heapUnit** slot,
 
   auto origin = determineSource(*slot);
 
-  if (!canPointInto.count({origin, cleanup_target})) {
-#if GC_DEBUG >= 2
+  if (!canPointInto(origin, cleanup_target)) {
+#if GC_DEBUG_LOG_LVL >= 2
     std::cout << indent << "Aborting: pointer to " << (int)origin << " isn't considered\n";
-#endif // GC_DEBUG
+#endif // GC_DEBUG_LOG_LVL
     return;
   }
 
@@ -132,15 +136,15 @@ void relocate(uint8_t* const stackPtr, heapUnit** slot,
 
   uint64_t len = isSingleUnitHeap(origin)? 1 : getRecordLength(tag); // This is the total number of slots of size 64 bytes occupied.
 
-#if GC_DEBUG >= 2
+#if GC_DEBUG_LOG_LVL >= 2
   std::cout << indent << "relocating " << slot << " from " << (int)determineSource((heapUnit*)slot) << " into " << (int)origin << " of tag/len " << std::hex << tag << "/" << len << std::endl;
-#endif // GC_DEBUG
+#endif // GC_DEBUG_LOG_LVL
 
   if (len == 0) { // we're revisiting an already relocated record...
     *slot = (heapUnit*)(tag & ~(heapUnit)0b11);
-#if GC_DEBUG >= 2
+#if GC_DEBUG_LOG_LVL >= 2
     std::cout << indent << "Assigning relocated " << *slot << std::endl;
-#endif // GC_DEBUG
+#endif // GC_DEBUG_LOG_LVL
     return;
   }
 
@@ -151,35 +155,37 @@ void relocate(uint8_t* const stackPtr, heapUnit** slot,
     std::copy_n(*slot, len, newHeapPtr); // perform the relocation
     **slot = (heapUnit)newHeapPtr | 0b11; // assign the old spot a relocation forward reference to the target
     *slot = newHeapPtr; // replace old pointer value
-#if GC_DEBUG >= 2
+#if GC_DEBUG_LOG_LVL >= 2
     std::cout << indent << "Assigning " << *slot << std::endl;
-#endif // GC_DEBUG
+#endif // GC_DEBUG_LOG_LVL
     newHeapPtr += len; // bump heap pointer
     units_left -= len;
   }
 
+  //! Most records are up to four elements in length.
+  #pragma unroll 4
   for (int i = isSingleUnitHeap(origin)? 0 : 1; i < len; ++i) {
     auto ptr_to_elem = (heapUnit**)*slot + i;
     auto element = (heapUnit)*ptr_to_elem;
-#if GC_DEBUG >= 2
+#if GC_DEBUG_LOG_LVL >= 2
     std::cout << indent << "\tElem " << i << " of " << *slot << " is " << std::hex << element << ';' << std::endl;
-#endif // GC_DEBUG
+#endif // GC_DEBUG_LOG_LVL
     if (element & 0b11) // not a pointer
       continue;
     if (ptr_to_elem != slot)
       relocate(stackPtr, ptr_to_elem, newHeapPtr, units_left, cleanup_target, reloc_target
-#if GC_DEBUG >= 2
+#if GC_DEBUG_LOG_LVL >= 2
       , indent + "\t"
-#endif // GC_DEBUG
+#endif // GC_DEBUG_LOG_LVL
       );
   }
 }
 
-extern "C" void __attribute__((naked)) cleanupSmallHeap() {
+extern "C" [[gnu::naked]] void cleanupSmallHeap()   {
   asm("mov %rsp, %rdi\n"
       "jmp cleanup_small_heap");
 }
-extern "C" void __attribute__((naked)) cleanupMutableHeap() {
+extern "C"  [[gnu::naked]] void cleanupMutableHeap()  {
   asm("mov %rsp, %rdi\n"
       "jmp cleanup_small_heap");
 }
@@ -233,10 +239,10 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap, Heap target, heapUnit*& newheapp
 
 // cleanup the small heap
 void cleanup_heap(uint8_t* stackPtr, Heap heap) {
-#if GC_DEBUG >= 1
+#if GC_DEBUG_LOG_LVL >= 1
   static int counter;
   std::cout << "\nCleaning " << (int)heap << "; " << ++counter << "th collection.\n";
-#endif // GC_DEBUG
+#endif // GC_DEBUG_LOG_LVL
   switch(heap) {
     case Heap::Young:
       cleanup_heap(stackPtr, Heap::Young, Heap::Old, largeHeapPtr, largeSizeLeft);
@@ -263,18 +269,24 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap) {
     default:
       assert(false && "Cannot clean invalid heap! Exceeded fixed heap size?");
   }
+#if GC_DEBUG_LOG_LVL >= 1
   std::cout << "Finished " << counter << "\n\n";
+#endif // GC_DEBUG_LOG_LVL
 }
 
 extern "C" void cleanup_small_heap(uint8_t* stackPtr) {
   cleanup_heap(stackPtr, Heap::Young);
 
   // Overwrite the cleaned memory to recognise wrong reads.
+#ifdef GC_MEMSET
   memset(heapBase, 0x7F, heapSize * sizeof(heapUnit));
+#endif
 }
 extern "C" void cleanup_mutable_heap(uint8_t* stackPtr) {
   cleanup_heap(stackPtr, Heap::Mutable);
 
   // Overwrite the cleaned memory to recognise wrong reads.
+#ifdef GC_MEMSET
   memset(referenceHeapBase, 0x7F, referenceHeapSize * sizeof(heapUnit));
+#endif
 }
