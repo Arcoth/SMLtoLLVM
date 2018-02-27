@@ -10,33 +10,26 @@ enum class Heap {
   Young, Old, Mutable
 };
 
-bool canPointInto(Heap from, Heap to) {
+constexpr bool canPointInto(Heap from, Heap to) {
   if (from == Heap::Young)
     return true;
 
   return to != Heap::Young;
 }
 
-//inline const std::set<std::pair<Heap, Heap>> canPointInto = {
-//  {Heap::Young, Heap::Young},
-//  {Heap::Young, Heap::Old},
-//  {Heap::Young, Heap::Mutable},
-//  {Heap::Old, Heap::Mutable},
-//  {Heap::Old, Heap::Old},
-//  {Heap::Mutable, Heap::Old}
-//  {Heap::Mutable, Heap::Mutable},
-//};
-
-inline bool isSingleUnitHeap(Heap h) {
+constexpr bool isSingleUnitHeap(Heap h) {
   return h == Heap::Mutable;
 }
 
+const uint64_t recordTagLen = 2,
+               valueTagLen = 1;
+
 // These constants represent the values of the two least significant
 // bits for each corresponding kind of object.
-const int pointerTag          = 0b00, // for pointers into the heap.
-          intTag              = 0b01, // for unboxed integers saved with pointer type.
-          lengthTag           = 0b01, // for the length field in a heap record tag.
-          floatTag            = 0b10, // for an unboxed float saved with pointer type.
-          relocatedPointerTag = 0b11; // for a relocation reference during garbage collection.
+const uint64_t pointerTag          = 0, // for pointers into the heap.
+               intTag              = 0b1, // for unboxed integers saved with pointer type.
+               floatTag            = 0b1, // for an unboxed float saved with pointer type.
+               lengthTag           = 0b01, // for the length field in a heap record tag.
+               relocatedPointerTag = 0b11; // for a relocation reference during garbage collection.
 
 }
