@@ -63,14 +63,45 @@ void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
         is >> exp;
     }
     else if (c == '"') {
+      is.putback(c);
       string s;
-      getline(is, s, '"');
+      is >> std::quoted(s);
       exp.emplace<STRING>(s);
     }
     else {
-      // TODO: handle floating point?
-      is.putback(c);
-      parse_into<INT>(exp, is, intType{});
+      std::string digits;
+
+      auto parse_remaining_digits = [&] {
+        char c;
+        while (std::isdigit(c = is.get()))
+          digits += c;
+        is.putback(c);
+      };
+
+      if (c == '~')
+        digits += '-';
+      else
+        is.putback(c);
+
+      parse_remaining_digits();
+      if (is.peek() == '.') {
+        digits += '.';
+        is.ignore();
+        parse_remaining_digits();
+        exp.emplace<REAL>(std::stod(digits));
+      }
+      else if (is.peek() == 'e') {
+        digits += 'e';
+        is.ignore();
+        if (is.peek() == '~') {
+          digits += '-';
+          is.ignore();
+        }
+        parse_remaining_digits();
+        exp.emplace<REAL>(std::stod(digits));
+      }
+      else
+        exp.emplace<INT>(std::stoi(digits));
     }
   }
   else if (s[0] == 'v') { // VAR or LET
