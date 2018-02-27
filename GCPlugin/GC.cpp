@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <functional>
 #include <iostream>
+#include <queue>
 #include <unordered_map>
 #include <vector>
 
@@ -23,6 +24,7 @@ using namespace SMLCompiler::GC;
 
 void* StackMapPtr;
 statepoint_table_t* table;
+uint8_t* currentStackPtr;
 
 using heapUnit = uint64_t;
 
@@ -31,8 +33,10 @@ uint64_t sizeLeft = heapSize;
 heapUnit *heapBase,
          *heapPtr; // points at the first free spot in the heap
 
-uint64_t largeHeapSize = 500'000'000;
+const double increaseFactor = 4;
+uint64_t largeHeapSize = 10000000;
 uint64_t largeSizeLeft = largeHeapSize;
+uint64_t nextLargeHeapSize = largeHeapSize;
 heapUnit *largeHeapBase,
          *largeHeapPtr,
          *auxLargeHeap; // points at the first free spot in the large heap
@@ -65,7 +69,6 @@ extern "C" void init() {
   memset(largeHeapBase, 0x77, largeHeapSize * sizeof(heapUnit));
   memset(heapBase, 0x77, heapSize * sizeof(heapUnit));
 #endif
-  auxLargeHeap = (heapUnit*)malloc(largeHeapSize * sizeof(heapUnit));
   std::cout << "Initialised GC!\n";
 }
 
@@ -85,12 +88,12 @@ bool is_in(Heap h, heapUnit* p) {
 Heap determineSource(heapUnit* ptr) {
   const bool in_small_heap = is_in(Heap::Young, ptr),
              in_mut_heap   = is_in(Heap::Mutable, ptr),
-             in_large_heap = is_in(Heap::Old, ptr);
-  const bool in_aux_large = is_in(auxLargeHeap, largeHeapSize, ptr);
-  const bool in_aux_ref = is_in(auxReferenceHeap, referenceHeapSize, ptr);
+             in_large_heap = is_in(Heap::Old, ptr),
+             in_aux_large  = auxLargeHeap && is_in(auxLargeHeap, largeHeapSize, ptr),
+             in_aux_ref    = auxReferenceHeap && is_in(auxReferenceHeap, referenceHeapSize, ptr);
   // assert(in_small_heap || in_mut_heap || in_large_heap || in_aux_ref || in_aux_large);
   return in_small_heap? Heap::Young
-       : in_large_heap || in_aux_large? Heap::Old
+       : in_large_heap? Heap::Old
        : in_mut_heap || in_aux_ref? Heap::Mutable
        : Heap::Invalid;
 }
@@ -112,72 +115,56 @@ uint64_t getRecordLength(uint64_t tag) {
 void cleanup_heap(uint8_t* stackPtr, Heap heap);
 
 __attribute__((hot))
-void relocate(uint8_t* const stackPtr, heapUnit** slot,
-              heapUnit*& newHeapPtr, std::size_t& units_left,
-              Heap cleanup_target, Heap reloc_target
-#if GC_DEBUG_LOG_LVL >= 2
-              , std::string indent = ""
-#endif // GC_DEBUG_LOG_LVL
-              )
-{
+void performRelocation(heapUnit** slot,
+                       heapUnit*& newHeapPtr, std::size_t& units_left,
+                       Heap cleanup_target, Heap reloc_target,
+                       std::queue<heapUnit**>& queue) {
   if (*slot == nullptr) // e.g. empty records, untagged data constructors, etc.
     return;
 
-  auto origin = determineSource(*slot);
+  auto ptrTarget = determineSource(*slot);
 
-  if (!canPointInto(origin, cleanup_target)) {
-#if GC_DEBUG_LOG_LVL >= 2
-    std::cout << indent << "Aborting: pointer to " << (int)origin << " isn't considered\n";
-#endif // GC_DEBUG_LOG_LVL
+  if (!canPointInto(ptrTarget, cleanup_target))
     return;
-  }
 
-  const uint64_t tag = **slot;
+  const auto tag = **slot;
 
-  uint64_t len = isSingleUnitHeap(origin)? 1 : getRecordLength(tag); // This is the total number of slots of size 64 bytes occupied.
-
-#if GC_DEBUG_LOG_LVL >= 2
-  std::cout << indent << "relocating " << slot << " from " << (int)determineSource((heapUnit*)slot) << " into " << (int)origin << " of tag/len " << std::hex << tag << "/" << len << std::endl;
-#endif // GC_DEBUG_LOG_LVL
+  uint64_t len = isSingleUnitHeap(ptrTarget)? 1 : getRecordLength(tag); // This is the total number of slots of size 64 bytes occupied.
 
   if (len == 0) { // we're revisiting an already relocated record...
     *slot = (heapUnit*)(tag & ~(heapUnit)0b11);
-#if GC_DEBUG_LOG_LVL >= 2
-    std::cout << indent << "Assigning relocated " << *slot << std::endl;
-#endif // GC_DEBUG_LOG_LVL
     return;
   }
 
-  if (origin == cleanup_target) {
-    if (len > units_left) // target heap ful?
-      cleanup_heap(stackPtr, reloc_target);
+  if (ptrTarget == cleanup_target) {
+//    if (len > units_left) // target heap full?
+//      cleanup_heap(currentStackPtr, reloc_target);
     assert(len <= units_left); // we can fit this into the target heap?
     std::copy_n(*slot, len, newHeapPtr); // perform the relocation
     **slot = (heapUnit)newHeapPtr | 0b11; // assign the old spot a relocation forward reference to the target
     *slot = newHeapPtr; // replace old pointer value
-#if GC_DEBUG_LOG_LVL >= 2
-    std::cout << indent << "Assigning " << *slot << std::endl;
-#endif // GC_DEBUG_LOG_LVL
     newHeapPtr += len; // bump heap pointer
     units_left -= len;
   }
 
-  //! Most records are up to four elements in length.
-  #pragma unroll 4
-  for (int i = isSingleUnitHeap(origin)? 0 : 1; i < len; ++i) {
+  for (int i = isSingleUnitHeap(ptrTarget)? 0 : 1; i < len; ++i) {
     auto ptr_to_elem = (heapUnit**)*slot + i;
     auto element = (heapUnit)*ptr_to_elem;
-#if GC_DEBUG_LOG_LVL >= 2
-    std::cout << indent << "\tElem " << i << " of " << *slot << " is " << std::hex << element << ';' << std::endl;
-#endif // GC_DEBUG_LOG_LVL
-    if (element & 0b11) // not a pointer
-      continue;
-    if (ptr_to_elem != slot)
-      relocate(stackPtr, ptr_to_elem, newHeapPtr, units_left, cleanup_target, reloc_target
-#if GC_DEBUG_LOG_LVL >= 2
-      , indent + "\t"
-#endif // GC_DEBUG_LOG_LVL
-      );
+    if ((element & 1) == 0 && ptr_to_elem != slot)
+      queue.push(ptr_to_elem);
+  }
+}
+
+void relocateStackPtr(
+  heapUnit** slot,
+  heapUnit*& newHeapPtr, std::size_t& units_left,
+  Heap cleanup_target, Heap reloc_target)
+{
+  std::queue<heapUnit**> queue;
+  queue.push(slot);
+  while (!queue.empty()) {
+    performRelocation(queue.front(), newHeapPtr, units_left, cleanup_target, reloc_target, queue);
+    queue.pop();
   }
 }
 
@@ -227,24 +214,27 @@ void walkStack(uint8_t* stackPtr, F slotHandler) {
 
 // cleanup the small heap
 void cleanup_heap(uint8_t* stackPtr, Heap heap, Heap target, heapUnit*& newheapptr, uint64_t& size_left) {
-  const auto originalStackPtr = stackPtr;
   if (!table)
     table = generate_table(StackMapPtr, 0.5);
 
   walkStack(stackPtr, [&] (heapUnit** ptr) {
     if (((intptr_t)*ptr & 0b11) == 0)
-      relocate(originalStackPtr, ptr, newheapptr, size_left, heap, target);
+      relocateStackPtr(ptr, newheapptr, size_left, heap, target);
   });
 }
 
 // cleanup the small heap
 void cleanup_heap(uint8_t* stackPtr, Heap heap) {
+  currentStackPtr = stackPtr;
 #if GC_DEBUG_LOG_LVL >= 1
   static int counter;
   std::cout << "\nCleaning " << (int)heap << "; " << ++counter << "th collection.\n";
 #endif // GC_DEBUG_LOG_LVL
   switch(heap) {
     case Heap::Young:
+      if (largeSizeLeft <= 2*heapSize)
+        cleanup_heap(stackPtr, Heap::Old);
+      assert(largeSizeLeft > heapSize && "Cannot relocate into insufficient large heap");
       cleanup_heap(stackPtr, Heap::Young, Heap::Old, largeHeapPtr, largeSizeLeft);
       heapPtr = heapBase;
       sizeLeft = heapSize;
@@ -255,20 +245,36 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap) {
       cleanup_heap(stackPtr, Heap::Mutable, Heap::Invalid, aux_ptr, referenceSizeLeft = referenceHeapSize);
       std::swap(referenceHeapBase, auxReferenceHeap); // swap the heap bases
       referenceHeapPtr = aux_ptr; // and assign the bump pointer
+//      std::free(auxReferenceHeap);
+//      auxReferenceHeap = nullptr;
     }
     break;
 
     case Heap::Old: {
+      auxLargeHeap = (heapUnit*)std::malloc(nextLargeHeapSize * sizeof(heapUnit));
       auto aux_ptr = auxLargeHeap; // this is the bump pointer for relocation
-      cleanup_heap(stackPtr, Heap::Old, Heap::Invalid, aux_ptr, largeSizeLeft = largeHeapSize);
+      largeSizeLeft = largeHeapSize;
+      cleanup_heap(stackPtr, Heap::Old, Heap::Invalid, aux_ptr, largeSizeLeft);
+
+      largeSizeLeft += nextLargeHeapSize - largeHeapSize;
       std::swap(largeHeapBase, auxLargeHeap); // swap the heap bases
       largeHeapPtr = aux_ptr; // and assign the bump pointer
+      largeHeapSize = nextLargeHeapSize; // assign the new size
+
+      std::free(auxLargeHeap);
+      auxLargeHeap = nullptr;
+
+      if (largeSizeLeft < 2 * heapSize) { // if less than two young heaps is left,
+        nextLargeHeapSize = largeHeapSize * increaseFactor; // scale the heap
+        std::cout << "Resizing heap to " << nextLargeHeapSize << '\n';
+      }
     }
     break;
 
     default:
       assert(false && "Cannot clean invalid heap! Exceeded fixed heap size?");
   }
+
 #if GC_DEBUG_LOG_LVL >= 1
   std::cout << "Finished " << counter << "\n\n";
 #endif // GC_DEBUG_LOG_LVL
