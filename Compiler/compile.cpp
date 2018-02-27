@@ -243,7 +243,8 @@ Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type, bool _
 }
 
 Value* boxIntNoCast(IRBuilder<>& builder, Value* x) {
-  return builder.CreateAdd(builder.CreateShl(x, 2, "shifted_int"), ConstantInt::get(x->getType(), GC::intTag), "boxed_int");
+  return builder.CreateOr(builder.CreateShl(x, GC::valueTagLen, "shifted_int"),
+                          GC::intTag, "boxed_int");
 }
 
 Value* boxInt(IRBuilder<>& builder, Value* x) {
@@ -253,8 +254,26 @@ Value* boxInt(IRBuilder<>& builder, Value* x) {
   return builder.CreateIntToPtr(boxIntNoCast(builder, x), genericPointerType(module.getContext()), "int_in_ptr");
 }
 
-// Cast the second argument to a pointer to int if the first one is an int.
-// Return appropriately casted pointer to stored location.
+Value* boxReal(IRBuilder<>& builder, Value* x) {
+  if (!x->getType()->isDoubleTy())
+    return x;
+  auto& module = *builder.GetInsertBlock()->getModule();
+
+  auto asInt = builder.CreateBitCast(x, genericIntType(module), "real_to_int");
+  asInt = builder.CreateOr(
+      asInt,
+      GC::floatTag, "tagged_float");
+  return builder.CreateIntToPtr(asInt, genericPointerType(module.getContext()), "float_in_int_to_ptr");
+}
+
+Value* box(IRBuilder<>& builder, Value* x) {
+  if (x->getType()->isIntegerTy())
+    return boxInt(builder, x);
+  if (x->getType()->isDoubleTy())
+    return boxReal(builder, x);
+  return x;
+}
+
 Value* getBoxedValue(IRBuilder<>& builder, Value* value) {
   if (value->getType()->isIntegerTy())
     return boxIntNoCast(builder, value);
@@ -273,12 +292,21 @@ Value* storeValue(IRBuilder<>& builder, Value* value, Value* ptr) {
   return ptr;
 }
 
+
 // expects a value of generic pointer tpye,
 Value* unboxInt(IRBuilder<>& builder, Value* x) {
   if (x->getType()->isIntegerTy())
     return x;
   return builder.CreateAShr(builder.CreatePtrToInt(x, genericIntType(*builder.GetInsertBlock()->getModule()), "ptr_to_int"),
-                            2, "unboxed_int");
+                            GC::valueTagLen, "unboxed_int");
+}
+
+Value* unboxReal(IRBuilder<>& builder, Value* x) {
+  auto& mod = *builder.GetInsertBlock()->getModule();
+  if (x->getType()->isDoubleTy())
+    return x;
+  x = builder.CreatePtrToInt(x, genericIntType(mod), "float_in_int");
+  return builder.CreateBitCast(builder.CreateAnd(x, ~GC::floatTag, "untagged_float"), Type::getDoubleTy(mod.getContext()), "unboxed_real");
 }
 
 struct AstContext {
@@ -319,9 +347,9 @@ Value* compile_primop(IRBuilder<>& builder,
     }
   }
 
-  auto unbox_args = [&] {
+  auto unbox_args = [&] (bool isFloat) {
     for (auto& val : arg_values)
-      val = [&builder, val] {return unboxInt(builder, val());};
+      val = [&builder, val, isFloat] {return isFloat? unboxReal(builder, val()) : unboxInt(builder, val());};
   };
 
   auto assert_arity = [] (auto& container, std::size_t expected) {
@@ -334,47 +362,49 @@ Value* compile_primop(IRBuilder<>& builder,
   switch (op.index()) {
     case ARITH: {
       auto& [oper, overflow, kind] = get<ARITH>(op);
-      if (kind.index() == Primop::FLOAT)
-        throw UnsupportedException{"Floating point arithmetic"};
+      const bool isFloat = kind.index() == Primop::FLOAT;
 
       // Integers are stored unboxed:
-      unbox_args();
+      unbox_args(isFloat);
       switch (oper) {
         #define PRIMOP_BIN_I(fun) \
           assert_arity(arg_values, 2); \
-          result = builder.Create##fun(arg_values[0](), arg_values[1]()); \
+          result = isFloat? builder.CreateF##fun(arg_values[0](), arg_values[1]()) \
+                          : builder.Create##fun(arg_values[0](), arg_values[1]()); \
           break;
         case MUL: PRIMOP_BIN_I(Mul)
         case ADD: PRIMOP_BIN_I(Add)
         case SUB: PRIMOP_BIN_I(Sub)
         default:
           throw UnsupportedException{"Arithmetic operator: " + std::to_string(oper)};
+        #undef PRIMOP_BIN_I
       }
       break;
     }
     case CMP: {
       auto& cmp = get<CMP>(op);
-      if (cmp.kind.index() == Primop::FLOAT)
-        throw UnsupportedException{"Floating point arithmetic"};
-      auto op = [&] (CmpInst::Predicate pred) {
-        result = builder.CreateIntCast(builder.CreateICmp(pred, arg_values[0](), arg_values[1](), "intcomp"),
+      const bool isFloat = cmp.kind.index() == Primop::FLOAT;
+      auto op = [&] (auto pred) {
+        result = builder.CreateIntCast(isFloat? builder.CreateFCmp(pred, arg_values[0](), arg_values[1](), "float_comp")
+                                              : builder.CreateICmp(pred, arg_values[0](), arg_values[1](), "int_comp"),
                                        genericIntType(module), false, "bool_to_int");
       };
-      // Integers are stored unboxed:
-      unbox_args();
+      // Scalars are stored unboxed:
+      unbox_args(isFloat);
+      #define COMP(fltname, intname) op(isFloat? CmpInst::FCMP_##fltname : CmpInst::ICMP_##intname); break;
       switch (cmp.oper) {
-        case EQL: {op(CmpInst::ICMP_EQ ); break;}
-        case NEQ: {op(CmpInst::ICMP_NE ); break;}
+        case EQL: COMP(OEQ, EQ)
+        case NEQ: COMP(ONE, NE)
 
-        case LT:  {op(CmpInst::ICMP_SLT); break;}
-        case LTE: {op(CmpInst::ICMP_SLE); break;}
-        case GT:  {op(CmpInst::ICMP_SGT); break;}
-        case GTE: {op(CmpInst::ICMP_SGE); break;}
+        case LT:  COMP(OLT, SLT)
+        case LTE: COMP(OLE, SLE)
+        case GT:  COMP(OGT, SGT)
+        case GTE: COMP(OGE, SGE)
 
-        case LTU: {op(CmpInst::ICMP_ULT); break;}
-        case LEU: {op(CmpInst::ICMP_ULE); break;}
-        case GTU: {op(CmpInst::ICMP_UGT); break;}
-        case GEU: {op(CmpInst::ICMP_UGE); break;}
+        case LTU: COMP(OLT, ULT)
+        case LEU: COMP(OLE, ULE)
+        case GTU: COMP(OGT, UGT)
+        case GEU: COMP(OGE, UGE)
         default:
           throw UnsupportedException{"Comparison operator: " + std::to_string(cmp.oper)};
       }
@@ -414,7 +444,7 @@ Value* record(IRBuilder<>& builder, Rng const& values ) {
   auto record_type = StructType::create(record_elem_types);
 
   //! DON'T ALLOCATE memory first; first compute values, then the heap array to store them in.
-  auto tag_v = ConstantInt::get(genericIntType(module), ((std::size(values)+1) << 2) | GC::lengthTag);
+  auto tag_v = ConstantInt::get(genericIntType(module), ((std::size(values)+1) << GC::recordTagLen) | GC::lengthTag);
   auto aggregate_v = builder.CreateInsertValue(UndefValue::get(record_type), tag_v, {0}, "record_tag"); // store function pointer...
   for (unsigned i = 0; i < std::size(values); ++i)
     aggregate_v = builder.CreateInsertValue(aggregate_v, getBoxedValue(builder, values[i]), {i+1}, "rcd_val_ptr");
@@ -512,6 +542,10 @@ Value* compile(IRBuilder<>& builder,
       auto i = get<INT>(expression);
       return ConstantInt::getSigned(genericIntType(module), i);
     }
+    case REAL: {
+      auto i = get<REAL>(expression);
+      return ConstantFP::get(Type::getDoubleTy(ctx), i);
+    }
     case FN: {
       auto& [fn_var, fn_lty, fn_body] = get<FN>(expression);
       auto free_vars = freeVars(expression);
@@ -564,7 +598,7 @@ Value* compile(IRBuilder<>& builder,
         astContext.fixPointVariable = -1;
       astContext.isFinalExpression = true;
       if (auto retv = compile(fun_builder, fn_body, inner_variables, unit, astContext))
-        fun_builder.CreateRet(boxInt(fun_builder, retv));
+        fun_builder.CreateRet(box(fun_builder, retv));
 
       return builder.CreatePointerCast(memory, genericPointerType(ctx), "clos_ptr_cast");
     }
@@ -749,6 +783,15 @@ Value* compile(IRBuilder<>& builder,
         result_node = builder.CreatePHI(genericIntType(module), results.size(), "switch_result");
         for (auto& [result_builder, result] : results) {
           result_node->addIncoming(unboxInt(*result_builder, result), result_builder->GetInsertBlock());
+          result_builder->CreateBr(exit_block);
+        }
+      }
+      else if (std::any_of(begin(results), end(results), [] (auto& pair) {
+        return pair.second->getType()->isDoubleTy();
+      })) {
+        result_node = builder.CreatePHI(Type::getDoubleTy(ctx), results.size(), "switch_result");
+        for (auto& [result_builder, result] : results) {
+          result_node->addIncoming(unboxReal(*result_builder, result), result_builder->GetInsertBlock());
           result_builder->CreateBr(exit_block);
         }
       }
