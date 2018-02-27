@@ -17,6 +17,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <boost/circular_buffer.hpp>
+
 // #define GC_MEMSET
 #define GC_DEBUG_LOG_LVL 0
 
@@ -34,7 +36,7 @@ heapUnit *heapBase,
          *heapPtr; // points at the first free spot in the heap
 
 const double increaseFactor = 4;
-uint64_t largeHeapSize = 10000000;
+uint64_t largeHeapSize = 500'000'000;
 uint64_t largeSizeLeft = largeHeapSize;
 uint64_t nextLargeHeapSize = largeHeapSize;
 heapUnit *largeHeapBase,
@@ -114,11 +116,12 @@ uint64_t getRecordLength(uint64_t tag) {
 
 void cleanup_heap(uint8_t* stackPtr, Heap heap);
 
+template <typename Queue>
 __attribute__((hot))
 void performRelocation(heapUnit** slot,
                        heapUnit*& newHeapPtr, std::size_t& units_left,
                        Heap cleanup_target, Heap reloc_target,
-                       std::queue<heapUnit**>& queue) {
+                       Queue& queue) {
   if (*slot == nullptr) // e.g. empty records, untagged data constructors, etc.
     return;
 
@@ -147,11 +150,12 @@ void performRelocation(heapUnit** slot,
     units_left -= len;
   }
 
+  #pragma unroll 4
   for (int i = isSingleUnitHeap(ptrTarget)? 0 : 1; i < len; ++i) {
     auto ptr_to_elem = (heapUnit**)*slot + i;
     auto element = (heapUnit)*ptr_to_elem;
     if ((element & 1) == 0 && ptr_to_elem != slot)
-      queue.push(ptr_to_elem);
+      queue.push_back(ptr_to_elem);
   }
 }
 
@@ -160,11 +164,11 @@ void relocateStackPtr(
   heapUnit*& newHeapPtr, std::size_t& units_left,
   Heap cleanup_target, Heap reloc_target)
 {
-  std::queue<heapUnit**> queue;
-  queue.push(slot);
+  boost::circular_buffer<heapUnit**> queue(1000);
+  queue.push_back(slot);
   while (!queue.empty()) {
     performRelocation(queue.front(), newHeapPtr, units_left, cleanup_target, reloc_target, queue);
-    queue.pop();
+    queue.pop_front();
   }
 }
 
