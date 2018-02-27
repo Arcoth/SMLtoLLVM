@@ -443,8 +443,10 @@ Value* record(IRBuilder<>& builder, Rng const& values ) {
     record_elem_types.push_back(x->getType());
   auto record_type = StructType::create(record_elem_types);
 
+  assert(DataLayout{&module}.getTypeAllocSize(record_type)== std::size(record_elem_types) * 8);
+
   //! DON'T ALLOCATE memory first; first compute values, then the heap array to store them in.
-  auto tag_v = ConstantInt::get(genericIntType(module), ((std::size(values)+1) << GC::recordTagLen) | GC::lengthTag);
+  auto tag_v = ConstantInt::get(genericIntType(module), (std::size(record_elem_types) << GC::recordTagLen) | GC::lengthTag);
   auto aggregate_v = builder.CreateInsertValue(UndefValue::get(record_type), tag_v, {0}, "record_tag"); // store function pointer...
   for (unsigned i = 0; i < std::size(values); ++i)
     aggregate_v = builder.CreateInsertValue(aggregate_v, getBoxedValue(builder, values[i]), {i+1}, "rcd_val_ptr");
@@ -689,7 +691,10 @@ Value* compile(IRBuilder<>& builder,
           //inner_vars[var] = ConstantPointerNull::get(genericPointerType(ctx));
           // Use some specific garbage for this scenario (address 12):
           inner_vars[var] = builder.CreateIntToPtr(ConstantInt::get(genericIntType(module), 0xDEADBEEF), genericPointerType(ctx));
-        closure_prs.push_back(compile(builder, fn, inner_vars, unit, {true, var, false}));
+        closure_prs.push_back(compile(builder, fn, inner_vars, unit,
+                                      {.isBodyOfFixpoint = true,
+                                       .fixPointVariable = var,
+                                       .isFinalExpression = false}));
       }
       // Adjust the pointers in all environments to refer to the allocated closures.
       std::size_t decl_index = 0;
