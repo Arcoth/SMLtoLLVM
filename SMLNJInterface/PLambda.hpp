@@ -46,7 +46,7 @@ struct lexp : LABELLED_VARIANT(
   (INT32, std::int32_t)
   (WORD, word)
   (WORD32, word32)
-  (REAL, string)
+  (REAL, double)
   (STRING, string)
   (PRIM, tuple<Primop::primop, lty, vector<tyc>>)
   (GENOP, tuple<dict, Primop::primop, lty, vector<tyc>>)
