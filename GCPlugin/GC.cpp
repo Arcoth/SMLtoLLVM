@@ -17,8 +17,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <boost/circular_buffer.hpp>
-
 // #define GC_MEMSET
 #define GC_DEBUG_LOG_LVL 0
 
@@ -30,13 +28,13 @@ uint8_t* currentStackPtr;
 
 using heapUnit = uint64_t;
 
-const uint64_t heapSize = 8000; // 8KB
+const uint64_t heapSize = 128000; // 8KB
 uint64_t sizeLeft = heapSize;
 heapUnit *heapBase,
          *heapPtr; // points at the first free spot in the heap
 
 const double increaseFactor = 4;
-uint64_t largeHeapSize = 500'000'000;
+uint64_t largeHeapSize = 1'000'000;
 uint64_t largeSizeLeft = largeHeapSize;
 uint64_t nextLargeHeapSize = largeHeapSize;
 heapUnit *largeHeapBase,
@@ -116,12 +114,13 @@ uint64_t getRecordLength(uint64_t tag) {
 
 void cleanup_heap(uint8_t* stackPtr, Heap heap);
 
+// Return: successful? Or queue full?
 template <typename Queue>
 __attribute__((hot))
-void performRelocation(heapUnit** slot,
+bool performRelocation(heapUnit** slot,
                        heapUnit*& newHeapPtr, std::size_t& units_left,
                        Heap cleanup_target, Heap reloc_target,
-                       Queue& queue) {
+                       Queue& queue, std::size_t& queueLeft) {
   if (*slot == nullptr) // e.g. empty records, untagged data constructors, etc.
     return;
 
@@ -138,6 +137,8 @@ void performRelocation(heapUnit** slot,
     *slot = (heapUnit*)(tag & ~(heapUnit)0b11);
     return;
   }
+  else if (len > queueLeft)
+    return false;
 
   if (ptrTarget == cleanup_target) {
 //    if (len > units_left) // target heap full?
@@ -154,29 +155,55 @@ void performRelocation(heapUnit** slot,
   for (int i = isSingleUnitHeap(ptrTarget)? 0 : 1; i < len; ++i) {
     auto ptr_to_elem = (heapUnit**)*slot + i;
     auto element = (heapUnit)*ptr_to_elem;
-    if ((element & 1) == 0 && ptr_to_elem != slot)
-      queue.push_back(ptr_to_elem);
+    if ((element & 1) == 0 && ptr_to_elem != slot) {
+      *queue++ = ptr_to_elem;
+      --queueLeft;
+    }
   }
+
+  return true;
 }
 
-void relocateStackPtr(
+/* Relocate a single pointer using a FIFO queue, modelling breadth-first traversal of the reachable object graph. */
+void relocatePointer(
   heapUnit** slot,
   heapUnit*& newHeapPtr, std::size_t& units_left,
   Heap cleanup_target, Heap reloc_target)
 {
-  boost::circular_buffer<heapUnit**> queue(1000);
-  queue.push_back(slot);
-  while (!queue.empty()) {
-    performRelocation(queue.front(), newHeapPtr, units_left, cleanup_target, reloc_target, queue);
-    queue.pop_front();
-  }
+  const std::size_t maximumBreadth = 1'000,
+                    queue_1_left = maximumBreadth,
+                    queue_2_left = maximumBreadth;
+  using heapUnitPtrPtr = heapUnit**;
+  heapUnitPtrPtr queue_1[maximumBreadth], queue_2[maximumBreadth];
+  auto base_1 = queue_1, base_2 = queue_2,
+       end_1 = base_1, end_2 = base_2;
+  *end_1++ = slot;
+  do {
+    for (; base_1 < end_1; base_1++)
+      if (!performRelocation(*base_1, newHeapPtr, units_left, cleanup_target, reloc_target, end_2, queue_2_left)) {
+        for (; base_1 < end_1; base_1++)
+          relocatePointer(*base_1, newHeapPtr, units_left, cleanup_target, reloc_target);
+        break;
+      }
+    base_1 = end_1 = queue_1;
+    queue_1_left = maximumBreadth;
+
+    for (; base_2 < end_2; base_2++)
+      if (!performRelocation(*base_2, newHeapPtr, units_left, cleanup_target, reloc_target, end_1, queue_1_left)) {
+        for (; base_2 < end_2; base_2++)
+            relocatePointer(*base_2, newHeapPtr, units_left, cleanup_target, reloc_target);
+        break;
+      }
+    base_2 = end_2 = queue_2;
+    queue_2_left = maximumBreadth;
+  } while (base_1 < end_1);
 }
 
 extern "C" [[gnu::naked]] void cleanupSmallHeap()   {
   asm("mov %rsp, %rdi\n"
       "jmp cleanup_small_heap");
 }
-extern "C"  [[gnu::naked]] void cleanupMutableHeap()  {
+extern "C" [[gnu::naked]] void cleanupMutableHeap()  {
   asm("mov %rsp, %rdi\n"
       "jmp cleanup_small_heap");
 }
@@ -223,7 +250,7 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap, Heap target, heapUnit*& newheapp
 
   walkStack(stackPtr, [&] (heapUnit** ptr) {
     if (((intptr_t)*ptr & 0b11) == 0)
-      relocateStackPtr(ptr, newheapptr, size_left, heap, target);
+      relocatePointer(ptr, newheapptr, size_left, heap, target);
   });
 }
 
