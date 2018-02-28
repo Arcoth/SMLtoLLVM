@@ -56,6 +56,15 @@ inline auto intFunctionType(Module& m) {
                            false); // not variadic
 }
 
+// The type of a function that takes an integer.
+inline auto realFunctionType(Module& m) {
+  auto& ctx = m.getContext();
+  return FunctionType::get(genericPointerType(ctx),   // the return value
+                           {Type::getDoubleTy(ctx),  // the argument
+                            genericPointerType(ctx)->getPointerTo()}, // the environment.
+                           false); // not variadic
+}
+
 // The default function type of any function in the PLC.
 inline auto genericFunctionType(LLVMContext& ctx) {
   return FunctionType::get(genericPointerType(ctx),   // the return value

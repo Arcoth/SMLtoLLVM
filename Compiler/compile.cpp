@@ -254,16 +254,18 @@ Value* boxInt(IRBuilder<>& builder, Value* x) {
   return builder.CreateIntToPtr(boxIntNoCast(builder, x), genericPointerType(module.getContext()), "int_in_ptr");
 }
 
+Value* boxRealInInt(IRBuilder<>& builder, Value* x) {
+  auto& module = *builder.GetInsertBlock()->getModule();
+
+  x = builder.CreateBitCast(x, genericIntType(module), "real_to_int");
+  return builder.CreateOr(x, GC::floatTag, "tagged_float");
+}
+
 Value* boxReal(IRBuilder<>& builder, Value* x) {
   if (!x->getType()->isDoubleTy())
     return x;
   auto& module = *builder.GetInsertBlock()->getModule();
-
-  auto asInt = builder.CreateBitCast(x, genericIntType(module), "real_to_int");
-  asInt = builder.CreateOr(
-      asInt,
-      GC::floatTag, "tagged_float");
-  return builder.CreateIntToPtr(asInt, genericPointerType(module.getContext()), "float_in_int_to_ptr");
+  return builder.CreateIntToPtr(boxRealInInt(builder, x), genericPointerType(module.getContext()), "float_in_int_to_ptr");
 }
 
 Value* box(IRBuilder<>& builder, Value* x) {
@@ -629,6 +631,38 @@ Value* compile(IRBuilder<>& builder,
             return compile(builder, body_exp, variables, unit, astContext);
           }
         }
+        else if (std::distance(occur_first, occur_last) == 0)
+          return recurse(body_exp);
+      }
+      // If a record is only selected from, we can avoid constructing it in the first place.
+      else if (auto record_exp = get_if<RECORD>(&assign_exp)) {
+        auto freeOccursInLet = freeVarOccurrences(body_exp, &expression);
+        auto [occur_first, occur_last] = freeOccursInLet.equal_range(let_var);
+        bool onlySelects = std::all_of(occur_first, occur_last, [] (auto& o) {
+          return o.second.enclosing_exp->index() == SELECT;
+        });
+        if (onlySelects) {
+          auto createNewVarIndex = [] (lvar var, int index) {
+            return (var << (sizeof(lvar)*8/2)) + index;
+          };
+
+          for (auto it = occur_first; it != occur_last; ++it) {
+            auto& [indices, _] = get<SELECT>(*it->second.enclosing_exp);
+            assert(indices.size() == 1);
+            auto index = indices[0];
+            auto new_index = createNewVarIndex(let_var, index);
+            // replace the SELECT with  a reference to the new variable we define below
+            it->second.enclosing_exp->emplace<VAR>(new_index);
+          }
+          lexp result = body_exp;
+          int elem_index = 0;
+          for (auto& rcd_elem : *record_exp)
+            result.emplace<LET>(createNewVarIndex(let_var, elem_index++),
+                           rcd_elem,
+                           lexp{result});
+          return recurse(result);
+
+        }
       }
 
       auto assign_value = recurse(assign_exp, false);
@@ -648,9 +682,13 @@ Value* compile(IRBuilder<>& builder,
       Value* arg_val = recurse(arg_exp, false);
 
       FunctionType* fun_type = nullptr;
-      if ( arg_val->getType()->isIntegerTy()) {
+      if (arg_val->getType()->isIntegerTy()) {
         fun_type = intFunctionType(module);
         arg_val = boxIntNoCast(builder, arg_val);
+      }
+      else if (arg_val->getType()->isDoubleTy()) {
+        arg_val = boxRealInInt(builder, arg_val);
+        fun_type = intFunctionType(module);
       }
       else
         fun_type = genericFunctionType(ctx);
@@ -766,16 +804,8 @@ Value* compile(IRBuilder<>& builder,
         }
 
         // Result is zero when there is an early return within the produced code.
-        if (Value* case_result = compile(*case_builder, exp, vars, unit, astContext)) {
+        if (Value* case_result = compile(*case_builder, exp, vars, unit, astContext))
           results.emplace_back(std::move(case_builder), case_result);
-//          // If the result is an integer, cast the store.
-//          if (case_result->getType()->isIntegerTy())
-//            case_builder.CreateStore(boxIntNoCast(case_builder, case_result),
-//                                     case_builder.CreatePointerCast(result, genericIntType(module)->getPointerTo()));
-//          else
-//            case_builder.CreateStore(case_result, result);
-
-        }
       }
 
       builder.SetInsertPoint(exit_block);
