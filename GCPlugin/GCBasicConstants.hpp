@@ -14,15 +14,16 @@ constexpr bool canPointInto(Heap from, Heap to) {
   if (from == Heap::Young)
     return true;
 
-  return to != Heap::Young;
+  return from != Heap::Invalid // A library function closure(?). Doesn't point to anything.
+      && (to != Heap::Young || from == Heap::Mutable); // to = young -> from = mutable
 }
 
 constexpr bool isSingleUnitHeap(Heap h) {
   return h == Heap::Mutable;
 }
 
-const uint64_t recordTagLen = 2,
-               valueTagLen = 1;
+const uint64_t recordFlagLength = 2,
+               valueFlagLength = 1;
 
 // These constants represent the values of the two least significant
 // bits for each corresponding kind of object.

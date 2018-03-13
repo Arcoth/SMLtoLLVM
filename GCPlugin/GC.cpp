@@ -28,43 +28,68 @@ uint8_t* currentStackPtr;
 
 using heapUnit = uint64_t;
 
-const uint64_t heapSize = 128000; // 8KB
+const uint64_t heapSize = 128'000; // 8KB
 uint64_t sizeLeft = heapSize;
 heapUnit *heapBase,
          *heapPtr; // points at the first free spot in the heap
 
-const double increaseFactor = 4;
-uint64_t largeHeapSize = 1'000'000;
-uint64_t largeSizeLeft = largeHeapSize;
-uint64_t nextLargeHeapSize = largeHeapSize;
-heapUnit *largeHeapBase,
-         *largeHeapPtr,
-         *auxLargeHeap; // points at the first free spot in the large heap
+heapUnit* allocate(std::size_t n) {
+  return (heapUnit*)malloc(n * sizeof(heapUnit));
+}
 
-const uint64_t referenceHeapSize = 24;
-uint64_t referenceSizeLeft = referenceHeapSize;
-heapUnit *referenceHeapBase,
-         *referenceHeapPtr,
-         *auxReferenceHeap; // first free spot in the mutator heap
 
-const std::unordered_map<Heap, uint64_t> heapSizes = {
-  {Heap::Young  , heapSize},
-  {Heap::Mutable, referenceHeapSize},
-  {Heap::Old    , largeHeapSize}
+struct SelfRelocatingHeap {
+  heapUnit*& ptr;
+  uint64_t& sizeLeft;
+
+  Heap heap;
+  heapUnit *base; // points at the first free spot in the large heap
+  double increaseFactor;
+  uint64_t size;
+  uint64_t nextSize;
+
+  SelfRelocatingHeap(Heap heap, heapUnit*& ptr, std::size_t& sizeLeft, double incFactor, std::size_t size)
+   : ptr(ptr), sizeLeft(sizeLeft), heap(heap), increaseFactor(incFactor), size(size), nextSize(size) {}
+
+  void increaseNextSize() {
+    nextSize = size * increaseFactor; // scale the heap
+    std::cout << "Resizing heap to " << nextSize << '\n';
+  }
+
+  void cleanup(uint8_t* stackPtr);
+
+  void init() {
+    base = ptr = allocate(size);
+  }
 };
 
-const std::unordered_map<Heap, std::reference_wrapper<heapUnit*>> heapBases = {
-  {Heap::Young  , heapBase},
-  {Heap::Mutable, referenceHeapBase},
-  {Heap::Old    , largeHeapBase}
+struct OldHeapT : SelfRelocatingHeap {
+private:
+  heapUnit* heap_ptr;
+  uint64_t heap_size_left;
+
+public:
+  OldHeapT() : SelfRelocatingHeap(Heap::Old, heap_ptr, heap_size_left, 4.0, 1'000'000),
+               heap_size_left(size) {}
+} OldHeap;
+
+heapUnit *referenceHeapPtr; // first free spot in the mutator heap
+uint64_t referenceSizeLeft = 1'000;
+
+SelfRelocatingHeap MutableHeap{
+  Heap::Mutable,
+  referenceHeapPtr,
+  referenceSizeLeft,
+  4.0,
+  1'000
 };
 
 std::unordered_map<void*, std::size_t> const* closureLengths;
 
 extern "C" void init() {
-  heapBase = heapPtr = (heapUnit*)malloc(heapSize * sizeof(heapUnit));
-  referenceHeapBase = referenceHeapPtr = (heapUnit*)malloc(referenceHeapSize * sizeof(heapUnit));
-  largeHeapBase = largeHeapPtr = (heapUnit*)malloc(largeHeapSize * sizeof(heapUnit));
+  heapBase = heapPtr = allocate(heapSize);
+  MutableHeap.init();
+  OldHeap.init();
 #ifdef GC_MEMSET
   memset(largeHeapBase, 0x77, largeHeapSize * sizeof(heapUnit));
   memset(heapBase, 0x77, heapSize * sizeof(heapUnit));
@@ -79,8 +104,8 @@ bool is_in(heapUnit* base, uint64_t len, heapUnit* p) {
 bool is_in(Heap h, heapUnit* p) {
   switch (h) {
     case Heap::Young: return is_in(heapBase, heapSize, p);
-    case Heap::Old: return is_in(largeHeapBase, largeHeapSize, p);
-    case Heap::Mutable: return is_in(referenceHeapBase, referenceHeapSize, p);
+    case Heap::Old: return is_in(OldHeap.base, OldHeap.size, p);
+    case Heap::Mutable: return is_in(MutableHeap.base, MutableHeap.size, p);
     default: assert(false);
   }
 }
@@ -88,13 +113,10 @@ bool is_in(Heap h, heapUnit* p) {
 Heap determineSource(heapUnit* ptr) {
   const bool in_small_heap = is_in(Heap::Young, ptr),
              in_mut_heap   = is_in(Heap::Mutable, ptr),
-             in_large_heap = is_in(Heap::Old, ptr),
-             in_aux_large  = auxLargeHeap && is_in(auxLargeHeap, largeHeapSize, ptr),
-             in_aux_ref    = auxReferenceHeap && is_in(auxReferenceHeap, referenceHeapSize, ptr);
-  // assert(in_small_heap || in_mut_heap || in_large_heap || in_aux_ref || in_aux_large);
+             in_large_heap = is_in(Heap::Old, ptr);
   return in_small_heap? Heap::Young
        : in_large_heap? Heap::Old
-       : in_mut_heap || in_aux_ref? Heap::Mutable
+       : in_mut_heap? Heap::Mutable
        : Heap::Invalid;
 }
 
@@ -122,12 +144,12 @@ bool performRelocation(heapUnit** slot,
                        Heap cleanup_target, Heap reloc_target,
                        Queue& queue, std::size_t& queueLeft) {
   if (*slot == nullptr) // e.g. empty records, untagged data constructors, etc.
-    return;
+    return true;
 
   auto ptrTarget = determineSource(*slot);
 
   if (!canPointInto(ptrTarget, cleanup_target))
-    return;
+    return true;
 
   const auto tag = **slot;
 
@@ -135,7 +157,7 @@ bool performRelocation(heapUnit** slot,
 
   if (len == 0) { // we're revisiting an already relocated record...
     *slot = (heapUnit*)(tag & ~(heapUnit)0b11);
-    return;
+    return true;
   }
   else if (len > queueLeft)
     return false;
@@ -155,7 +177,9 @@ bool performRelocation(heapUnit** slot,
   for (int i = isSingleUnitHeap(ptrTarget)? 0 : 1; i < len; ++i) {
     auto ptr_to_elem = (heapUnit**)*slot + i;
     auto element = (heapUnit)*ptr_to_elem;
-    if ((element & 1) == 0 && ptr_to_elem != slot) {
+    if ((element & 1) == 0
+     && (ptrTarget == cleanup_target || (heapUnit*)element != *slot)) // if we didn't relocate, avoid infinite recursion
+    {
       *queue++ = ptr_to_elem;
       --queueLeft;
     }
@@ -170,9 +194,9 @@ void relocatePointer(
   heapUnit*& newHeapPtr, std::size_t& units_left,
   Heap cleanup_target, Heap reloc_target)
 {
-  const std::size_t maximumBreadth = 1'000,
-                    queue_1_left = maximumBreadth,
-                    queue_2_left = maximumBreadth;
+  std::size_t maximumBreadth = 1'000,
+              queue_1_left = maximumBreadth,
+              queue_2_left = maximumBreadth;
   using heapUnitPtrPtr = heapUnit**;
   heapUnitPtrPtr queue_1[maximumBreadth], queue_2[maximumBreadth];
   auto base_1 = queue_1, base_2 = queue_2,
@@ -223,8 +247,6 @@ void walkStack(uint8_t* stackPtr, F slotHandler) {
       std::ptrdiff_t diff = 0;
       if(ptrSlot.kind >= 0) {
         diff = *ptr - lastPointers.at(ptrSlot.kind);
-        // we do not use derived pointers
-        // assert(false && "unexpected derived pointer\n");
       }
       lastPointers.push_back(*ptr);
       *ptr -= diff;
@@ -245,17 +267,31 @@ void walkStack(uint8_t* stackPtr, F slotHandler) {
 
 // cleanup the small heap
 void cleanup_heap(uint8_t* stackPtr, Heap heap, Heap target, heapUnit*& newheapptr, uint64_t& size_left) {
-  if (!table)
-    table = generate_table(StackMapPtr, 0.5);
-
   walkStack(stackPtr, [&] (heapUnit** ptr) {
-    if (((intptr_t)*ptr & 0b11) == 0)
+    if (((heapUnit)*ptr & 0b11) == 0)
       relocatePointer(ptr, newheapptr, size_left, heap, target);
   });
 }
 
+void SelfRelocatingHeap::cleanup(uint8_t* stackPtr) {
+  auto aux_base = allocate(nextSize),
+       aux_ptr = aux_base; // this is the bump pointer for relocation
+
+  sizeLeft = size;
+  cleanup_heap(stackPtr, heap, Heap::Invalid, aux_ptr, sizeLeft);
+
+  sizeLeft += nextSize - size;
+  std::swap(base, aux_base); // swap the heap bases
+  ptr = aux_ptr; // and assign the bump pointer
+  size = nextSize; // assign the new size
+
+  std::free(aux_base);
+}
+
 // cleanup the small heap
 void cleanup_heap(uint8_t* stackPtr, Heap heap) {
+  if (!table)
+    table = generate_table(StackMapPtr, 0.5);
   currentStackPtr = stackPtr;
 #if GC_DEBUG_LOG_LVL >= 1
   static int counter;
@@ -263,43 +299,34 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap) {
 #endif // GC_DEBUG_LOG_LVL
   switch(heap) {
     case Heap::Young:
-      if (largeSizeLeft <= 2*heapSize)
+      if (OldHeap.sizeLeft <= 2*heapSize)
         cleanup_heap(stackPtr, Heap::Old);
-      assert(largeSizeLeft > heapSize && "Cannot relocate into insufficient large heap");
-      cleanup_heap(stackPtr, Heap::Young, Heap::Old, largeHeapPtr, largeSizeLeft);
+      assert(OldHeap.sizeLeft > heapSize && "Cannot relocate into insufficient large heap");
+      cleanup_heap(stackPtr, Heap::Young, Heap::Old, OldHeap.ptr, OldHeap.sizeLeft);
+
+      // Traverse the mutable heap conservatively.
+      for (auto ptr = MutableHeap.base; ptr < MutableHeap.ptr; ++ptr)
+        if ((*ptr & 0b11) == 0)
+          relocatePointer((heapUnit**)ptr, OldHeap.ptr, OldHeap.sizeLeft, Heap::Young, Heap::Old);
+
       heapPtr = heapBase;
       sizeLeft = heapSize;
       break;
 
-    case Heap::Mutable: {
-      auto aux_ptr = auxReferenceHeap; // this is the bump pointer for relocation
-      cleanup_heap(stackPtr, Heap::Mutable, Heap::Invalid, aux_ptr, referenceSizeLeft = referenceHeapSize);
-      std::swap(referenceHeapBase, auxReferenceHeap); // swap the heap bases
-      referenceHeapPtr = aux_ptr; // and assign the bump pointer
-//      std::free(auxReferenceHeap);
-//      auxReferenceHeap = nullptr;
-    }
+    case Heap::Mutable:
+      MutableHeap.cleanup(stackPtr);
+
+      if (MutableHeap.sizeLeft < 0.02 * MutableHeap.size) { // if less than two percent of space is left,
+        MutableHeap.increaseNextSize(); // increase the next allocation.
+        MutableHeap.cleanup(stackPtr);
+      }
     break;
 
-    case Heap::Old: {
-      auxLargeHeap = (heapUnit*)std::malloc(nextLargeHeapSize * sizeof(heapUnit));
-      auto aux_ptr = auxLargeHeap; // this is the bump pointer for relocation
-      largeSizeLeft = largeHeapSize;
-      cleanup_heap(stackPtr, Heap::Old, Heap::Invalid, aux_ptr, largeSizeLeft);
+    case Heap::Old:
+      OldHeap.cleanup(stackPtr);
 
-      largeSizeLeft += nextLargeHeapSize - largeHeapSize;
-      std::swap(largeHeapBase, auxLargeHeap); // swap the heap bases
-      largeHeapPtr = aux_ptr; // and assign the bump pointer
-      largeHeapSize = nextLargeHeapSize; // assign the new size
-
-      std::free(auxLargeHeap);
-      auxLargeHeap = nullptr;
-
-      if (largeSizeLeft < 2 * heapSize) { // if less than two young heaps is left,
-        nextLargeHeapSize = largeHeapSize * increaseFactor; // scale the heap
-        std::cout << "Resizing heap to " << nextLargeHeapSize << '\n';
-      }
-    }
+      if (OldHeap.sizeLeft < 2 * heapSize) // if less than two young heaps are left,
+        OldHeap.increaseNextSize(); // increase the next allocation.
     break;
 
     default:
