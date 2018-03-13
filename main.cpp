@@ -1,24 +1,66 @@
 #include "SMLNJInterface/ParserUtilities.hpp"
 #include "Compiler/compile.hpp"
 
-#include "REPL.h"
+#include "BinaryEmission.h"
+#include "JITExecution.hpp"
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Support/TargetSelect.h>
+
+#include <llvm/Support/TargetRegistry.h>
 #include <llvm/Support/TargetSelect.h>
 
 #include <boost/process.hpp>
 
 #include <iostream>
 
+using namespace SMLNJInterface;
+using namespace SMLCompiler;
+
+ImportsVector parseImports(std::istream& is) {
+  for (std::string line; std::getline(is, line) && line != " the current import tree is :";)
+    ;
+
+  ImportsVector tree;
+  for (std::string pid_label; (is >> pid_label) && pid_label == "Pid";) {
+    std::string pid;
+    is >> pid;
+
+    // While the next character is a digit...
+    while(std::isdigit((is >> std::ws).peek())) {
+      int a, b;
+      is >> a >> b;
+      tree.emplace_back(pid.c_str(), std::array<int, 2>{{a, b}});
+    }
+  }
+  return tree;
+}
+
 auto parseVerbosePlambda(std::istream& is) {
   for (std::string line; std::getline(is, line) && line != "PLambda:";)
     ;
 
-  SMLCompiler::PLambda::lexp e;
+  PLambda::lexp e;
   is >> e;
   return e;
 }
+
+void addSymbols(SMLTranslationUnit& unit) {
+  auto& module = *unit.module;
+  auto& context = module.getContext();
+  unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "::"}]
+    = {.type = symbol_rep::UNTAGGED, .value = ConstantInt::getTrue(context)};
+  unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "nil"}]
+    = {.type = symbol_rep::UNTAGGED, .value = ConstantInt::getFalse(context)};
+
+  unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "true"}]
+    = {.type = symbol_rep::CONSTANT, .value = cast<ConstantInt>(ConstantInt::get(tagType(module), 1))};
+  unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "false"}]
+    = {.type = symbol_rep::CONSTANT, .value = cast<ConstantInt>(ConstantInt::get(tagType(module), 0))};
+}
+
+
 
 int main(int argc, char** argv) try
 {
@@ -27,15 +69,15 @@ int main(int argc, char** argv) try
     return EXIT_SUCCESS;
   }
 
-  using namespace SMLNJInterface;
-  using namespace SMLCompiler;
   namespace bp = boost::process;
 
   bp::ipstream output;
   bp::opstream input;
-  bp::child sml("sml @SMLload=smlnj/base/system/sml " + std::string{argv[1]},
+  bp::child sml("smlnj/base/system/testml sml " + std::string{argv[1]},
                 bp::std_out > output, bp::std_in < input);
   std::istream stream(new Parser::log_input_buf(output.rdbuf(), std::cout));
+
+  auto importMap = parseImports(stream);
 
   // stream.exceptions(std::ios::failbit);
   auto plambda = parseVerbosePlambda(stream);
@@ -47,18 +89,10 @@ int main(int argc, char** argv) try
   using namespace llvm;
 
   LLVMContext context;
-  auto module = std::make_unique<Module>("SML default module", context);
-
-  SMLTranslationUnit unit(plambda);
-  unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "::"}]
-    = {.type = symbol_rep::UNTAGGED, .value = ConstantInt::getTrue(context)};
-  unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "nil"}]
-    = {.type = symbol_rep::UNTAGGED, .value = ConstantInt::getFalse(context)};
-
-  unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "true"}]
-    = {.type = symbol_rep::CONSTANT, .value = cast<ConstantInt>(ConstantInt::get(tagType(*module), 1))};
-  unit.symbolRepresentation[Symbol::symbol{Symbol::varInt, "false"}]
-    = {.type = symbol_rep::CONSTANT, .value = cast<ConstantInt>(ConstantInt::get(tagType(*module), 0))};
+  SMLTranslationUnit unit(plambda, std::move(importMap),
+                          new Module("SML module", context));
+  auto module = unit.module;
+  addSymbols(unit);
 
   for (auto& [var, name] : unit.exportedDecls) {
     static auto skip_to = [&] (std::istream& s, char c) {
@@ -91,19 +125,18 @@ int main(int argc, char** argv) try
 
   // Invoke the compiler.
   addGCSymbols(*module);
-  SMLCompiler::compile_top(unit, *module);
+  SMLCompiler::compile_top(unit);
 
   SMLCompiler::performOptimisationPasses(*module);
-
-  if (verifyModule(*module, &errs())) {
-    errs() << "The code is ill-formed!\n\n";
-    module->print(outs(), nullptr);
-    return EXIT_SUCCESS;
-  }
 
   // Print out all of the generated code.
   outs() << "\n\n\n\nPRINTING LLVM MODULE CONTENTS:\n\n";
   module->print(outs(), nullptr);
+
+  if (verifyModule(*module, &errs())) {
+    errs() << "\nThe code is ill-formed!\n\n";
+    return EXIT_SUCCESS;
+  }
 
   SMLCompiler::performStatepointsPass(*module);
 
@@ -125,11 +158,10 @@ int main(int argc, char** argv) try
     return EXIT_SUCCESS;
   }
 
-
   auto main_fun_index = std::distance(functionNames.begin(),
                                       decl_iter);
-  // Need to transfer ownership.
-  return execute(module.release(), main_fun_index, unit.closureLength.data(), unit.closureLength.size());
+
+  return execute(main_fun_index, unit);
 }
   catch (SMLCompiler::CompileFailException const& e) {
   std::cerr << "Compilation failed: " << e.what();
