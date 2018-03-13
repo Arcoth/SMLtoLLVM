@@ -1,5 +1,8 @@
 #include "Compiler/compile.hpp"
-#include "REPL.h"
+#include "GCPlugin/GCBasicConstants.hpp"
+#include "JITExecution.hpp"
+
+#include "SMLLibrary.hpp"
 
 #include <llvm/IR/Module.h>
 
@@ -200,8 +203,7 @@ void addGCSymbols(Module& mod) {
   }
 }
 
-int execute(Module* mod, std::size_t functionIndex, void const* closLengthByFun_, std::size_t len) {
-  auto closLengthByFun = (std::pair<Function*, std::size_t> const*)closLengthByFun_;
+int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
   InitializeNativeTarget();
   LLVMInitializeNativeAsmPrinter();
   LLVMInitializeNativeAsmParser();
@@ -209,7 +211,8 @@ int execute(Module* mod, std::size_t functionIndex, void const* closLengthByFun_
   auto memManagerUptr = std::make_unique<MemManager>();
   auto memManager = memManagerUptr.get();
   std::string err_str;
-  auto EE = EngineBuilder{std::unique_ptr<Module>{mod}}
+  auto module = unit.module;
+  auto EE = EngineBuilder{std::unique_ptr<Module>(unit.module)}
               .setErrorStr(&err_str)
               .setMemoryManager(move(memManagerUptr))
               .create();
@@ -224,17 +227,14 @@ int execute(Module* mod, std::size_t functionIndex, void const* closLengthByFun_
     return EXIT_FAILURE;
   }
 
-  EE->generateCodeForModule(mod);
+  EE->generateCodeForModule(module);
 
   assert(memManager->stackMap());
   *(void**)gclib.getAddressOfSymbol("StackMapPtr") = memManager->stackMap();
 
   std::unordered_map<void*, std::size_t> closureLengths;
-  while (len--) {
-    auto [fun, len] = *closLengthByFun++;
+  for (auto [fun, len] : unit.closureLength)
     closureLengths[(void*)EE->getPointerToFunction(fun)] = len;
-  }
-
   *(void**)gclib.getAddressOfSymbol("closureLengths") = &closureLengths;
 
   // Invoke the GC initialisation (allocate and set up the heap pointers)
@@ -244,27 +244,38 @@ int execute(Module* mod, std::size_t functionIndex, void const* closLengthByFun_
     return EXIT_FAILURE;
   }
 
+  std::vector<genericPointerTypeNative> imports{0}; // record tag takes one spot
+  for (auto& [pid, indices] : unit.importTree) {
+    auto closure = LibraryImpl::libraryIdMap.at(pid.c_str()).at(indices);
+    imports.push_back(closure);
+  }
+
   //! Start measuring at the GC initialisation.
-  auto start_time = std::chrono::high_resolution_clock::now();
   gc_init();
 
   // Get the structured record
-  auto fce_ptr = (genericPointerTypeNative*(*)())EE->getFunctionAddress("export");
-  auto lambda = fce_ptr();
-
+  auto exportFunction = (genericFunctionTypeNative*)EE->getFunctionAddress("export");
+  auto start_time = std::chrono::high_resolution_clock::now();
+  auto lambda = (genericPointerTypeNative*)exportFunction((genericPointerTypeNative)imports.data(), nullptr);
 
   // Invoke the function with the given index. Indexing starts at 1.
   auto last_fnc = (genericPointerTypeNative*)lambda[functionIndex+1];
 
-
+  genericIntTypeNative arg = 100'000'000;
   auto res = (genericIntTypeNative)((genericFunctionTypeNative*) last_fnc[0])
-               ((genericPointerTypeNative)((100'000'000 << 2) + 1), last_fnc+1);
-  res >>= 2;
+               ((genericPointerTypeNative)((arg << GC::valueFlagLength) + GC::intTag), last_fnc);
+
+  res &= ~GC::floatTag;
+  double double_res;
+  std::memcpy(&double_res, &res, sizeof res);
+  res >>= 1;
+
   auto result_time = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double> elapsed_seconds = result_time-start_time;
 
-  outs() << "Time: " << (int)(elapsed_seconds.count()*1000) << "ms\n"
-         << "Result: " << res << '\n';
+  std::cout << "Time: " << (int)(elapsed_seconds.count()*1000) << "ms\n"
+            << "Result: " << double_res << "(double), " << res << "(int)\n";
+
 
   return EXIT_SUCCESS;
 }

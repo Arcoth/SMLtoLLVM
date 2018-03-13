@@ -12,8 +12,6 @@ namespace SMLCompiler {
   // Add the entities required for interaction with the GC runtime.
   void addGCSymbols(llvm::Module& mod);
 
-  // Execute the first function in the module with some test parameter.
-  // The pointer and length parameter designate the map that assigns each function its closures' length.
-  int execute(llvm::Module* mod, std::size_t funIndex,
-              void const* closureLengths, std::size_t rangeSize);
+  // Execute the function at index funIndex with some test parameter.
+  int execute(std::size_t funIndex, SMLTranslationUnit& unit);
 }
