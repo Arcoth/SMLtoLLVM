@@ -7,6 +7,18 @@
 
 namespace SMLCompiler{
 
+using genericPointerTypeNative = char*;
+using genericIntTypeNative = std::intptr_t;
+using genericFunctionTypeNative =
+  genericPointerTypeNative(genericPointerTypeNative, genericPointerTypeNative[]);
+
+inline genericPointerTypeNative boxNative(genericIntTypeNative i) {
+  return (genericPointerTypeNative)((i << 1) | 1);
+}
+inline genericIntTypeNative unboxNative(genericPointerTypeNative i) {
+  return ((genericIntTypeNative)i) >> 1;
+}
+
 class CompileFailException : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
