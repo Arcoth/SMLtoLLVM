@@ -212,14 +212,13 @@ lexp const* outermostClosedLet(lexp const& exp) {
   return freeVars(*ret).empty()? ret : nullptr;
 }
 
-SMLTranslationUnit::SMLTranslationUnit(lexp const& exp) {
-  if (exp.index() != FN)
+SMLTranslationUnit::SMLTranslationUnit(lexp const& exp, ImportsVector imports, llvm::Module* mod)
+  : importTree(std::move(imports)), exportedLexp(exp), module(std::move(mod)) {
+  auto fn = get_if<FN>(&exportedLexp);
+  if (!fn)
     throw CompileFailException{"SMLTranslationUnit(lexp const&): expression not a function"};
+  auto body = &get<2>(*fn);
 
-  auto body = outermostClosedLet(get<dlexp>(get<FN>(exp)).get());
-  if (!body)
-    throw CompileFailException{"PLambda depends on external imports!"};
-  exportedLetExpr = *body;
   while (auto p = get_if<LET>(body))
     body = &get<2>(*p);
   if (body->index() != SRECORD)
@@ -243,7 +242,7 @@ Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type, bool _
 }
 
 Value* boxIntNoCast(IRBuilder<>& builder, Value* x) {
-  return builder.CreateOr(builder.CreateShl(x, GC::valueTagLen, "shifted_int"),
+  return builder.CreateOr(builder.CreateShl(x, GC::valueFlagLength, "shifted_int"),
                           GC::intTag, "boxed_int");
 }
 
@@ -300,7 +299,13 @@ Value* unboxInt(IRBuilder<>& builder, Value* x) {
   if (x->getType()->isIntegerTy())
     return x;
   return builder.CreateAShr(builder.CreatePtrToInt(x, genericIntType(*builder.GetInsertBlock()->getModule()), "ptr_to_int"),
-                            GC::valueTagLen, "unboxed_int");
+                            GC::valueFlagLength, "unboxed_int");
+}
+
+Value* unboxRealFromInt(IRBuilder<>& builder, Value* x) {
+  auto& mod = *builder.GetInsertBlock()->getModule();
+  return builder.CreateBitCast(builder.CreateAnd(x, ~GC::floatTag, "untagged_float"),
+                               Type::getDoubleTy(mod.getContext()), "unboxed_real");
 }
 
 Value* unboxReal(IRBuilder<>& builder, Value* x) {
@@ -308,13 +313,15 @@ Value* unboxReal(IRBuilder<>& builder, Value* x) {
   if (x->getType()->isDoubleTy())
     return x;
   x = builder.CreatePtrToInt(x, genericIntType(mod), "float_in_int");
-  return builder.CreateBitCast(builder.CreateAnd(x, ~GC::floatTag, "untagged_float"), Type::getDoubleTy(mod.getContext()), "unboxed_real");
+  return unboxRealFromInt(builder, x);
 }
 
 struct AstContext {
-  bool isBodyOfFixpoint;
   PLambda::lvar fixPointVariable;
-  bool isFinalExpression;
+  bool isBodyOfFixpoint;       // immediate of a fixpoint function (above is the corresponding var.)
+  bool isFinalExpression;      // expression whose value is immediately yielded by a function
+  bool isCtorArgument;         // Argument to a construtor
+  bool moduleExportExpression; // The top-most lambda expression
 };
 
 Value* compile(IRBuilder<>& builder,
@@ -350,6 +357,7 @@ Value* compile_primop(IRBuilder<>& builder,
   }
 
   auto unbox_args = [&] (bool isFloat) {
+    arg_value = [&builder, arg_value, isFloat] {return isFloat? unboxReal(builder, arg_value()) : unboxInt(builder, arg_value());;};
     for (auto& val : arg_values)
       val = [&builder, val, isFloat] {return isFloat? unboxReal(builder, val()) : unboxInt(builder, val());};
   };
@@ -369,31 +377,42 @@ Value* compile_primop(IRBuilder<>& builder,
       // Integers are stored unboxed:
       unbox_args(isFloat);
       switch (oper) {
-        #define PRIMOP_BIN_I(fun) \
-          assert_arity(arg_values, 2); \
-          result = isFloat? builder.CreateF##fun(arg_values[0](), arg_values[1]()) \
-                          : builder.Create##fun(arg_values[0](), arg_values[1]()); \
+        #define PRIMOP_BIN_F(fun) \
+          assert_arity(arg_values, 2); assert(isFloat); \
+          result = builder.Create##fun(arg_values[0](), arg_values[1](), "float_" #fun); \
           break;
-        case MUL: PRIMOP_BIN_I(Mul)
-        case ADD: PRIMOP_BIN_I(Add)
-        case SUB: PRIMOP_BIN_I(Sub)
+        #define PRIMOP_BIN(fun) \
+          assert_arity(arg_values, 2); \
+          result = isFloat? builder.CreateF##fun(arg_values[0](), arg_values[1](), "float_" #fun) \
+                          : builder.Create##fun(arg_values[0](), arg_values[1](), "int_" #fun); \
+          break;
+        case MUL: PRIMOP_BIN(Mul)
+        case ADD: PRIMOP_BIN(Add)
+        case SUB: PRIMOP_BIN(Sub)
+        case NEG:
+          result = isFloat? builder.CreateFNeg(arg_values[0](), "float_Neg")
+                          : builder.CreateNeg(arg_values[0](), "int_Neg");
+          break;
+
+        case FDIV: PRIMOP_BIN_F(FDiv)
+
+
+
         default:
           throw UnsupportedException{"Arithmetic operator: " + std::to_string(oper)};
-        #undef PRIMOP_BIN_I
+        #undef PRIMOP_BIN
       }
       break;
     }
     case CMP: {
       auto& cmp = get<CMP>(op);
       const bool isFloat = cmp.kind.index() == Primop::FLOAT;
-      auto op = [&] (auto pred) {
-        result = builder.CreateIntCast(isFloat? builder.CreateFCmp(pred, arg_values[0](), arg_values[1](), "float_comp")
-                                              : builder.CreateICmp(pred, arg_values[0](), arg_values[1](), "int_comp"),
-                                       genericIntType(module), false, "bool_to_int");
-      };
       // Scalars are stored unboxed:
       unbox_args(isFloat);
-      #define COMP(fltname, intname) op(isFloat? CmpInst::FCMP_##fltname : CmpInst::ICMP_##intname); break;
+      #define COMP(fltname, intname) \
+        result = builder.CreateIntCast(isFloat? builder.CreateFCmp(CmpInst::FCMP_##fltname, arg_values[0](), arg_values[1](), "float_comp") \
+                                              : builder.CreateICmp(CmpInst::ICMP_##intname, arg_values[0](), arg_values[1](), "int_comp"),  \
+                                       genericIntType(module), false, "bool_to_int"); break;
       switch (cmp.oper) {
         case EQL: COMP(OEQ, EQ)
         case NEQ: COMP(ONE, NE)
@@ -410,6 +429,8 @@ Value* compile_primop(IRBuilder<>& builder,
         default:
           throw UnsupportedException{"Comparison operator: " + std::to_string(cmp.oper)};
       }
+
+      #undef COMP
       break;
     }
     case DEREF: {
@@ -428,6 +449,10 @@ Value* compile_primop(IRBuilder<>& builder,
       lhs = builder.CreatePointerCast(lhs, rhs->getType()->getPointerTo(heapAddressSpace), "assign_casted_ptr");
       storeValue(builder, rhs, lhs);
       return ConstantPointerNull::get(genericPointerType(module.getContext()));
+    }
+    case Primop::REAL: {
+      unbox_args(false);
+      return builder.CreateBitCast(arg_value(), Type::getDoubleTy(module.getContext()), "int_to_double");
     }
     default:
       throw UnsupportedException{"primop " + std::to_string(op.index())};
@@ -448,8 +473,8 @@ Value* record(IRBuilder<>& builder, Rng const& values ) {
   assert(DataLayout{&module}.getTypeAllocSize(record_type)== std::size(record_elem_types) * 8);
 
   //! DON'T ALLOCATE memory first; first compute values, then the heap array to store them in.
-  auto tag_v = ConstantInt::get(genericIntType(module), (std::size(record_elem_types) << GC::recordTagLen) | GC::lengthTag);
-  auto aggregate_v = builder.CreateInsertValue(UndefValue::get(record_type), tag_v, {0}, "record_tag"); // store function pointer...
+  auto tag_v = ConstantInt::get(genericIntType(module), (std::size(record_elem_types) << GC::recordFlagLength) | GC::lengthTag);
+  auto aggregate_v = builder.CreateInsertValue(UndefValue::get(record_type), tag_v, {0}, "record_tag");
   for (unsigned i = 0; i < std::size(values); ++i)
     aggregate_v = builder.CreateInsertValue(aggregate_v, getBoxedValue(builder, values[i]), {i+1}, "rcd_val_ptr");
 
@@ -522,12 +547,125 @@ void insertAbort(IRBuilder<>& builder) {
   builder.CreateUnreachable();
 }
 
+using namespace Lty;
+inline bool isInteger(lty l) {
+  if (l.index() == LT_TYC) {
+    auto& a = std::get<LT_TYC>(l);
+    if (a.index() == TC_PRIM) {
+      auto& b = std::get<TC_PRIM>(a);
+      return b == PrimTyc::PT_INT31
+          || b == PrimTyc::PT_INT32
+          || b == PrimTyc::PT_INTINF;
+    }
+  }
+  return false;
+}
+inline bool isReal(lty l) {
+  if (l.index() == LT_TYC) {
+    auto& a = std::get<LT_TYC>(l);
+    if (a.index() == TC_PRIM) {
+      auto& b = std::get<TC_PRIM>(a);
+      return b == PrimTyc::PT_REAL;
+    }
+  }
+  return false;
+}
+
+Value* compileFunction(IRBuilder<>* builder,
+                       lexp& expression,
+                       std::map<PLambda::lvar, Value*> const& variables,
+                       SMLTranslationUnit& unit,
+                       AstContext astContext) {
+  auto& module = *unit.module;
+  auto& ctx = module.getContext();
+
+  auto& [fn_var, fn_lty, fn_body] = get<FN>(expression);
+  auto free_vars = freeVars(expression);
+
+  const bool isRealFunction = isReal(fn_lty);
+
+  auto fun_type = isInteger(fn_lty)? intFunctionType(module) :
+                  isRealFunction? realFunctionType(module) : genericFunctionType(ctx);
+
+  // Create the hoisted function.
+  char const* name;
+  if (astContext.moduleExportExpression)
+    name = "export";
+  else {
+    auto n = new char[16] {};
+    std::sprintf(n, "lambda.v%d", fn_var);
+    name = n;
+  }
+  auto F = Function::Create(fun_type, Function::ExternalLinkage, name, &module);
+
+  unit.closureLength.emplace_back(F, free_vars.size()+1);
+
+  unit.paramFuncs[fn_var] = F->getName();
+
+  BasicBlock *BB = BasicBlock::Create(ctx, "entry", F);
+  IRBuilder<> fun_builder(BB);
+
+  std::map<PLambda::lvar, Value*> inner_variables;
+  // Adapt free bindings from the enclosing expression
+  {
+    unsigned index = 1; //! Start at 1; we pass the closure in without offset.
+    auto env = F->arg_begin()+1; // second argument is the environment.
+    for (auto var : free_vars)
+      inner_variables[var] = fun_builder.CreateLoad(fun_builder.CreateConstGEP1_32(env, index++, "captured_ptr"), "captured");
+  }
+
+  if (isRealFunction)
+    inner_variables[fn_var] = unboxRealFromInt(fun_builder, F->arg_begin()); // first argument is the argument
+  else
+    inner_variables[fn_var] = F->arg_begin(); // first argument is the argument
+
+
+  std::vector<Type*> types{fun_type->getPointerTo()};
+  for (auto var : free_vars) {
+    auto var_it = variables.find(var);
+    if (var_it == variables.end())
+      throw CompileFailException{"FN: Captured variable " + std::to_string(var) + " not defined in enclosing scope"};
+    types.push_back(var_it->second->getType());
+  }
+
+  auto wrapper_type = StructType::create(types, F->getName().str() + "Wrapper");
+
+  if (astContext.isBodyOfFixpoint)
+    astContext.isBodyOfFixpoint = false;
+  else
+    astContext.fixPointVariable = -1;
+  astContext.isFinalExpression = true;
+
+  auto newAstCtx = astContext;
+  newAstCtx.moduleExportExpression = false;
+  if (auto retv = compile(fun_builder, fn_body, inner_variables, unit, newAstCtx))
+    fun_builder.CreateRet(box(fun_builder, retv));
+
+  if (!astContext.moduleExportExpression) {
+    assert(builder && "Builder must be non-zero!");
+    auto aggregate_v = builder->CreateInsertValue(UndefValue::get(wrapper_type), F, {0}, "fun_ptr_slot"); // store function pointer...
+    {
+      unsigned index = 1;
+      for (auto var : free_vars) {
+        auto& var_v = variables.at(var);
+        aggregate_v = builder->CreateInsertValue(aggregate_v, var_v, {index++}, "closure");
+      }
+    }
+
+    // Allocate and fill the closure with captured variables.
+    auto memory = createAllocation(module, *builder, wrapper_type, false);
+    builder->CreateStore(aggregate_v, memory);
+    return builder->CreatePointerCast(memory, genericPointerType(ctx), "clos_ptr_cast");
+  }
+  return nullptr;
+}
+
 Value* compile(IRBuilder<>& builder,
                lexp& expression,
                std::map<PLambda::lvar, Value*> const& variables,
                SMLTranslationUnit& unit,
                AstContext astContext) {
-  auto& module = *builder.GetInsertBlock()->getModule();
+  auto& module = *unit.module;
   auto& ctx = module.getContext();
   auto recurse = [&, astContext] (lexp& e, std::optional<bool> last = std::nullopt) mutable {
     if (last.has_value())
@@ -551,60 +689,7 @@ Value* compile(IRBuilder<>& builder,
       return ConstantFP::get(Type::getDoubleTy(ctx), i);
     }
     case FN: {
-      auto& [fn_var, fn_lty, fn_body] = get<FN>(expression);
-      auto free_vars = freeVars(expression);
-      auto fun_type = genericFunctionType(ctx);
-
-      // Create the hoisted function.
-      char* name = new char[16] {};
-      std::sprintf(name, "lambda.v%d", fn_var);
-      auto F = Function::Create(fun_type, Function::ExternalLinkage, name, &module);
-
-      unit.closureLength.emplace_back(F, free_vars.size()+1);
-
-      unit.paramFuncs[fn_var] = F->getName();
-
-      auto env_array_type = ArrayType::get(genericPointerType(ctx), free_vars.size());
-      auto wrapper_type = StructType::create({genericFunctionType(ctx)->getPointerTo(),
-                                              env_array_type}, F->getName().str() + "Wrapper");
-
-      auto aggregate_v = builder.CreateInsertValue(UndefValue::get(wrapper_type), F, {0}, "fun_ptr_slot"); // store function pointer...
-      {
-        unsigned index = 0;
-        for (auto var : free_vars) {
-          auto var_it = variables.find(var);
-          if (var_it == variables.end())
-            throw CompileFailException{"FN: Captured variable " + std::to_string(var) + " not defined in enclosing scope"};
-          aggregate_v = builder.CreateInsertValue(aggregate_v, var_it->second, {1, index++}, "closure");
-        }
-      }
-
-      // Allocate and fill the closure with captured variables.
-      auto memory = createAllocation(module, builder, wrapper_type, false);
-      builder.CreateStore(aggregate_v, memory);
-
-      BasicBlock *BB = BasicBlock::Create(ctx, "entry", F);
-      IRBuilder<> fun_builder(BB);
-
-      std::map<PLambda::lvar, Value*> inner_variables;
-      // Adapt free bindings from the enclosing expression
-      {
-        unsigned index = 0;
-        auto env = std::next(F->arg_begin()); // second argument is the environment.
-        for (auto var : free_vars)
-          inner_variables[var] = fun_builder.CreateLoad(fun_builder.CreateConstGEP1_32(env, index++, "captured_ptr"), "captured");
-      }
-      inner_variables[fn_var] = F->arg_begin(); // first argument is the argument
-
-      if (astContext.isBodyOfFixpoint)
-        astContext.isBodyOfFixpoint = false;
-      else
-        astContext.fixPointVariable = -1;
-      astContext.isFinalExpression = true;
-      if (auto retv = compile(fun_builder, fn_body, inner_variables, unit, astContext))
-        fun_builder.CreateRet(box(fun_builder, retv));
-
-      return builder.CreatePointerCast(memory, genericPointerType(ctx), "clos_ptr_cast");
+      return compileFunction(&builder, expression, variables, unit, astContext);
     }
     case LET: {
       auto& [let_var, assign_exp, body_exp] = get<LET>(expression);
@@ -661,7 +746,6 @@ Value* compile(IRBuilder<>& builder,
                            rcd_elem,
                            lexp{result});
           return recurse(result);
-
         }
       }
 
@@ -678,9 +762,9 @@ Value* compile(IRBuilder<>& builder,
         return compile_primop(builder, prim_oper, arg_exp, variables, unit, astContext);
       }
 
-      // The remaining cases are arbitrary function calls.
       Value* arg_val = recurse(arg_exp, false);
 
+      // Always box. We cannot know when a function is being called generically or not.
       FunctionType* fun_type = nullptr;
       if (arg_val->getType()->isIntegerTy()) {
         fun_type = intFunctionType(module);
@@ -693,26 +777,26 @@ Value* compile(IRBuilder<>& builder,
       else
         fun_type = genericFunctionType(ctx);
 
-      // Recursive call?
       if (fn_exp.get().index() == VAR
-       && get<VAR>(fn_exp.get()) == astContext.fixPointVariable
-       && astContext.isFinalExpression) {
-        std::cout << "Replacing app of " << astContext.fixPointVariable << "\n";
+       && get<VAR>(fn_exp.get()) == astContext.fixPointVariable) {
+        std::cout << "Replacing app of " << astContext.fixPointVariable << ", final: " << std::boolalpha << astContext.isFinalExpression << "\n";
         auto recursive_function = builder.GetInsertBlock()->getParent();
 
-        auto result = builder.CreateCall(recursive_function,
+        auto result = builder.CreateCall(recursive_function ,
                                          {arg_val, recursive_function->arg_begin()+1}, "recursive_call");
-        result->mutateFunctionType(fun_type);
-        builder.CreateRet(result);
-        return nullptr;
+
+        if (astContext.isFinalExpression) {
+          builder.CreateRet(result);
+          return nullptr;
+        }
+        return result;
       }
 
       auto fn_v = recurse(fn_exp, false);
-      auto closure_ptr = builder.CreatePointerCast(fn_v, genericPointerType(ctx)->getPointerTo(), "closure_ptr");
+      auto closure_ptr = builder.CreatePointerCast(fn_v, closurePointerType(ctx), "closure_ptr");
       auto fn_ptr = builder.CreateLoad(builder.CreatePointerCast(closure_ptr, fun_type->getPointerTo()->getPointerTo(heapAddressSpace), "fun_ptr_ptr"), "fun_ptr");
-      auto env_v = builder.CreateConstGEP1_32(closure_ptr, 1, "env_ptr");
 
-      return builder.CreateCall(fn_ptr, {arg_val, env_v});
+      return builder.CreateCall(fn_ptr, {arg_val, closure_ptr});
     }
     case FIX: {
       /*
@@ -848,6 +932,7 @@ Value* compile(IRBuilder<>& builder,
         case symbol_rep::CONSTANT:
           return boxInt(builder, symrep.value);
         case symbol_rep::TAGGED: {
+          astContext.isCtorArgument = true;
           auto rcd = recurse(argument, false);
           builder.CreateStore(symrep.value, getTagPtrFromRecordPtr(builder, rcd));
           return builder.CreatePointerCast(rcd, genericPointerType(ctx));
@@ -860,12 +945,14 @@ Value* compile(IRBuilder<>& builder,
     }
 
     case RECORD: {
-      std::vector<Value*> values;
       astContext.isFinalExpression = false;
-      for (auto& e : get<RECORD>(expression))
-        values.push_back(recurse(e));
-      if (values.empty())
+      auto& elem_exps = get<RECORD>(expression);
+      if (elem_exps.empty() && !astContext.isCtorArgument) // If a Ctor argument, we must yield something that a tag can be written into
         return ConstantPointerNull::get(genericPointerType(ctx));
+      astContext.isCtorArgument = false;
+      std::vector<Value*> values;
+      for (auto& e : elem_exps)
+        values.push_back(recurse(e));
       auto ptr = record(builder, values);
       return builder.CreatePointerCast(ptr, genericPointerType(ctx), "rcd_ptr");
     }
@@ -875,7 +962,7 @@ Value* compile(IRBuilder<>& builder,
       for (auto& e : get<SRECORD>(expression))
         values.push_back(recurse(e));
       auto ptr = record(builder, values);
-      return builder.CreatePointerCast(ptr, genericPointerType(ctx)->getPointerTo(heapAddressSpace), "srcd_ptr");
+      return builder.CreatePointerCast(ptr, genericPointerType(ctx), "srcd_ptr");
     }
 
     case SELECT: {
@@ -905,18 +992,8 @@ Value* compile(IRBuilder<>& builder,
 }
 
 // The top-most compile function. It is passed the output of printing a lexp term in SML/NJ.
-void compile_top(SMLTranslationUnit& unit, Module& module) {
-  auto& ctx = module.getContext();
-
-  auto exportFn = Function::Create(FunctionType::get(genericPointerType(ctx)->getPointerTo(heapAddressSpace),
-                                                    /* isVarArg = */false),
-                            Function::ExternalLinkage, "export", &module);
-
-  BasicBlock *BB = BasicBlock::Create(ctx, "entry", exportFn);
-  IRBuilder<> builder(BB);
-  auto v = compile(builder, unit.exportedLetExpr, {}, unit, {});
-  builder.CreateStore(ConstantInt::get(Type::getInt32Ty(ctx), 0x777), getTagPtrFromRecordPtr(builder, v));
-  builder.CreateRet(v);
+void compile_top(SMLTranslationUnit& unit) {
+  compileFunction(nullptr, unit.exportedLexp, {}, unit, {.moduleExportExpression = true});
 }
 
 }

@@ -10,6 +10,10 @@
 #include <set>
 #include <map>
 
+#include <boost/unordered_map.hpp>
+#include <boost/container/string.hpp>
+#include <boost/container/vector.hpp>
+
 namespace SMLCompiler {
 
 using namespace SMLNJInterface;
@@ -30,12 +34,12 @@ inline const int heapAddressSpace = 1;
 inline char const* const immutableAllocFun = "allocateImmutable",
                  * const mutableAllocFun = "allocateMutable";
 
-using genericPointerTypeNative = char*;
-using genericIntTypeNative = std::intptr_t;
-using genericFunctionTypeNative = genericPointerTypeNative(genericPointerTypeNative, genericPointerTypeNative[]);
-
 inline auto genericPointerType(LLVMContext& c) {
   return Type::getInt8Ty(c)->getPointerTo(heapAddressSpace);
+}
+
+inline auto closurePointerType(LLVMContext& c) {
+  return genericPointerType(c)->getPointerTo(heapAddressSpace);
 }
 
 inline auto genericIntType(Module& m) {
@@ -52,24 +56,20 @@ inline auto intFunctionType(Module& m) {
   auto& ctx = m.getContext();
   return FunctionType::get(genericPointerType(ctx),   // the return value
                            {genericIntType(m),  // the argument
-                            genericPointerType(ctx)->getPointerTo()}, // the environment.
+                            closurePointerType(ctx)}, // the environment.
                            false); // not variadic
 }
 
 // The type of a function that takes an integer.
 inline auto realFunctionType(Module& m) {
-  auto& ctx = m.getContext();
-  return FunctionType::get(genericPointerType(ctx),   // the return value
-                           {Type::getDoubleTy(ctx),  // the argument
-                            genericPointerType(ctx)->getPointerTo()}, // the environment.
-                           false); // not variadic
+  return intFunctionType(m);
 }
 
 // The default function type of any function in the PLC.
 inline auto genericFunctionType(LLVMContext& ctx) {
   return FunctionType::get(genericPointerType(ctx),   // the return value
                            {genericPointerType(ctx),  // the argument
-                            genericPointerType(ctx)->getPointerTo()}, // the environment.
+                            closurePointerType(ctx)}, // the environment.
                            false); // not variadic
 }
 
@@ -80,15 +80,22 @@ struct symbol_rep {
   ConstantInt* value;
 };
 
+using ImportsVector = boost::container::vector<std::pair<boost::container::string, std::array<int, 2>>>;
+
 class SMLTranslationUnit {
 public:
-  SMLTranslationUnit(PLambda::lexp const&);
+  SMLTranslationUnit(PLambda::lexp const&, ImportsVector imports, llvm::Module*);
 
-  // The innermost closed let expression.
-  PLambda::lexp exportedLetExpr;
+  // The imports by PID.
+  ImportsVector importTree;
 
   // for each function, records the length of the closure.
-  std::vector<std::pair<Function*, std::size_t>> closureLength;
+  boost::container::vector<std::pair<Function*, std::size_t>> closureLength;
+
+  llvm::Module* module;
+
+  // The innermost closed let expression.
+  PLambda::lexp exportedLexp;
 
   std::map<Symbol::symbol, symbol_rep> symbolRepresentation;
 
@@ -99,7 +106,7 @@ public:
 };
 
 // The top-most compile function. It is passed the output of printing a lexp term in SML/NJ.
-void compile_top(SMLTranslationUnit& unit, Module& module);
+void compile_top(SMLTranslationUnit& unit);
 
 }
 
