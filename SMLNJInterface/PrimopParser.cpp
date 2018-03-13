@@ -73,6 +73,8 @@ std::istream& operator>>(std::istream& is, primop& op) {
     else
       on_error(is, "Failed parsing numkind for primop ", s);
   }
+  else if (s == "real")
+    op.emplace<REAL>();
   else if (s == "markexn")
     op.emplace<MARKEXN>();
   else if (s == "!")

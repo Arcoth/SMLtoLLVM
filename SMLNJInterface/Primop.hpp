@@ -175,12 +175,12 @@ struct primop : LABELLED_VARIANT(
      * which of its (ML-) arguments are floating point. C prototype
      * information is for use by the backend, ML information is for
      * use by the CPS converter. */
-  (RAW_CCALL, struct RAW_CCALL {
+  (RAW_CCALL, struct {
     PrimCTypes::c_proto c_proto;
     vector<ccall_type> ml_args;
     optional<ccall_type> ml_res_opt;
     bool reentrant;
-  } _; typedef optional<RAW_CCALL>)
+  } RAW_CCALL; typedef optional<RAW_CCALL>)
   (RAW_RECORD, struct {
     bool fblock;
   })
