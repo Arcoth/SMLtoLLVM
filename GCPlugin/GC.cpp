@@ -1,4 +1,4 @@
-#include "GCBasicConstants.hpp"
+#include "GC.h"
 
 #include "llvm-statepoint-utils/dist/llvm-statepoint-tablegen.h"
 
@@ -18,15 +18,13 @@
 #include <vector>
 
 // #define GC_MEMSET
-#define GC_DEBUG_LOG_LVL 1
+#define GC_DEBUG_LOG_LVL 0
 
 using namespace SMLCompiler::GC;
 
 void* StackMapPtr;
 statepoint_table_t* table;
 uint8_t* currentStackPtr;
-
-using heapUnit = uint64_t;
 
 const uint64_t smallHeapSize = 128'000; // 8KB
 uint64_t smallSizeLeft = smallHeapSize;
@@ -84,7 +82,7 @@ SelfRelocatingHeap MutableHeap{
   1'000
 };
 
-std::unordered_map<void*, std::size_t> const* closureLengths;
+std::unordered_map<void*, std::size_t> closureLengths;
 
 extern "C" void init() {
   heapBase = heapPtr = allocate(smallHeapSize);
@@ -121,7 +119,7 @@ Heap determineSource(heapUnit* ptr) {
 uint64_t getRecordLength(uint64_t tag) {
   switch (tag & 0b11) {
   case 0:
-    return closureLengths->at((void*)tag);
+    return closureLengths.at((void*)tag);
     break;
   case 0b01:
     return (tag & UINT32_MAX) >> 2;
@@ -139,7 +137,7 @@ template <typename Queue>
 __attribute__((hot))
 bool performRelocation(heapUnit** slot,
                        heapUnit*& newHeapPtr, std::size_t& units_left,
-                       Heap cleanup_target, Heap reloc_target,
+                       Heap cleanup_target,
                        Queue& queue, std::size_t& queueLeft) {
   auto ptrTarget = determineSource(*slot);
 
@@ -175,7 +173,7 @@ bool performRelocation(heapUnit** slot,
   assert(isFixedContentHeap(ptrTarget) == 0); // Don't support other atm
 
   #pragma unroll 4
-  for (int i = 1; i < len; ++i) {
+  for (unsigned i = 1; i < len; ++i) {
     auto ptr_to_elem = (heapUnit**)*slot + i;
     auto element = (heapUnit)*ptr_to_elem;
     if ((element & 1) == 0
@@ -194,7 +192,7 @@ template <typename Queue>
 __attribute__((hot))
 bool performRelocation(heapUnit** slot,
                        heapUnit*& newHeapPtr, std::size_t& units_left,
-                       Heap cleanup_target, Heap reloc_target,
+                       Heap cleanup_target,
                        Queue& queue, std::size_t& queueLeft,
                        heapUnit* base,
                        std::vector<bool>& is_relocated) {
@@ -235,7 +233,7 @@ bool performRelocation(heapUnit** slot,
     return false;
 
   #pragma unroll 4
-  for (int i = 1; i < len; ++i) {
+  for (unsigned i = 1; i < len; ++i) {
     auto ptr_to_elem = (heapUnit**)*slot + i;
     auto element = (heapUnit)*ptr_to_elem;
     if ((element & 1) == 0
@@ -254,7 +252,7 @@ template <typename... Args>
 void relocatePointer(
   heapUnit** slot,
   heapUnit*& newHeapPtr, std::size_t& units_left,
-  Heap cleanup_target, Heap reloc_target, Args&... args)
+  Heap cleanup_target, Args&... args)
 {
   std::size_t maximumBreadth = 1'000,
               queue_1_left = maximumBreadth,
@@ -267,18 +265,18 @@ void relocatePointer(
 
   do {
     for (; base_1 < end_1; base_1++)
-      if (!performRelocation(*base_1, newHeapPtr, units_left, cleanup_target, reloc_target, end_2, queue_2_left, args...)) {
+      if (!performRelocation(*base_1, newHeapPtr, units_left, cleanup_target, end_2, queue_2_left, args...)) {
         for (; base_1 < end_1; base_1++)
-          relocatePointer(*base_1, newHeapPtr, units_left, cleanup_target, reloc_target, args...);
+          relocatePointer(*base_1, newHeapPtr, units_left, cleanup_target, args...);
         break;
       }
     base_1 = end_1 = queue_1;
     queue_1_left = maximumBreadth;
 
     for (; base_2 < end_2; base_2++)
-      if (!performRelocation(*base_2, newHeapPtr, units_left, cleanup_target, reloc_target, end_1, queue_1_left, args...)) {
+      if (!performRelocation(*base_2, newHeapPtr, units_left, cleanup_target, end_1, queue_1_left, args...)) {
         for (; base_2 < end_2; base_2++)
-            relocatePointer(*base_2, newHeapPtr, units_left, cleanup_target, reloc_target, args...);
+            relocatePointer(*base_2, newHeapPtr, units_left, cleanup_target, args...);
         break;
       }
     base_2 = end_2 = queue_2;
@@ -321,10 +319,10 @@ void walkStack(uint8_t* stackPtr, F slotHandler) {
 
 // cleanup the small heap
 template <typename... Args>
-void cleanup_heap(uint8_t* stackPtr, Heap heap, Heap target, heapUnit*& newheapptr, uint64_t& size_left, Args&... args) {
+void cleanup_heap(uint8_t* stackPtr, Heap heap, heapUnit*& newheapptr, uint64_t& size_left, Args&... args) {
   walkStack(stackPtr, [&] (heapUnit** ptr) {
     if (((heapUnit)*ptr & 0b11) == 0)
-      relocatePointer(ptr, newheapptr, size_left, heap, target, args...);
+      relocatePointer(ptr, newheapptr, size_left, heap, args...);
   });
 }
 
@@ -335,10 +333,10 @@ void SelfRelocatingHeap::cleanup(uint8_t* stackPtr) {
   sizeLeft = size;
   if (isFixedContentHeap(heap)) {
     std::vector<bool> vec(size);
-    cleanup_heap(stackPtr, heap, Heap::Invalid, aux_ptr, sizeLeft, base, vec);
+    cleanup_heap(stackPtr, heap, aux_ptr, sizeLeft, base, vec);
   }
   else
-    cleanup_heap(stackPtr, heap, Heap::Invalid, aux_ptr, sizeLeft);
+    cleanup_heap(stackPtr, heap, aux_ptr, sizeLeft);
 
   sizeLeft += nextSize - size;
   std::swap(base, aux_base); // swap the heap bases
@@ -362,12 +360,12 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap) {
       if (OldHeap.sizeLeft <= 2*smallHeapSize)
         cleanup_heap(stackPtr, Heap::Old);
       assert(OldHeap.sizeLeft > smallHeapSize && "Cannot relocate into insufficient large heap");
-      cleanup_heap(stackPtr, Heap::Young, Heap::Old, OldHeap.ptr, OldHeap.sizeLeft);
+      cleanup_heap(stackPtr, Heap::Young, OldHeap.ptr, OldHeap.sizeLeft);
 
       // Traverse the mutable heap conservatively.
       for (auto ptr = MutableHeap.base; ptr < MutableHeap.ptr; ++ptr)
         if ((*ptr & 0b11) == 0)
-          relocatePointer((heapUnit**)ptr, OldHeap.ptr, OldHeap.sizeLeft, Heap::Young, Heap::Old);
+          relocatePointer((heapUnit**)ptr, OldHeap.ptr, OldHeap.sizeLeft, Heap::Young);
 
       heapPtr = heapBase;
       smallSizeLeft = smallHeapSize;
