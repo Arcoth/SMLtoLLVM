@@ -18,8 +18,8 @@ constexpr bool canPointInto(Heap from, Heap to) {
       && (to != Heap::Young || from == Heap::Mutable); // to = young -> from = mutable
 }
 
-constexpr bool isSingleUnitHeap(Heap h) {
-  return h == Heap::Mutable;
+constexpr int isFixedContentHeap(Heap h) {
+  return h == Heap::Mutable? 1 : 0;
 }
 
 const uint64_t recordFlagLength = 2,
