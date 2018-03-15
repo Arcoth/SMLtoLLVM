@@ -275,7 +275,7 @@ Value* box(IRBuilder<>& builder, Value* x) {
   return x;
 }
 
-Value* getBoxedValue(IRBuilder<>& builder, Value* value) {
+Value* boxedValue(IRBuilder<>& builder, Value* value) {
   if (value->getType()->isIntegerTy())
     return boxIntNoCast(builder, value);
   if (value->getType()->isDoubleTy())
@@ -483,7 +483,7 @@ Value* record(IRBuilder<>& builder, Rng const& values ) {
   auto tag_v = ConstantInt::get(genericIntType(module), (std::size(record_elem_types) << GC::recordFlagLength) | GC::lengthTag);
   auto aggregate_v = builder.CreateInsertValue(UndefValue::get(record_type), tag_v, {0}, "record_tag");
   for (unsigned i = 0; i < std::size(values); ++i)
-    aggregate_v = builder.CreateInsertValue(aggregate_v, getBoxedValue(builder, values[i]), {i+1}, "rcd_val_ptr");
+    aggregate_v = builder.CreateInsertValue(aggregate_v, boxedValue(builder, values[i]), {i+1}, "rcd_val_ptr");
 
   auto storage = createAllocation(module, builder, record_type);
   builder.CreateStore(aggregate_v, storage);
@@ -655,7 +655,7 @@ Value* compileFunction(IRBuilder<>* builder,
       unsigned index = 1;
       for (auto var : free_vars) {
         auto& var_v = variables.at(var);
-        aggregate_v = builder->CreateInsertValue(aggregate_v, var_v, {index++}, "closure");
+        aggregate_v = builder->CreateInsertValue(aggregate_v, boxedValue(*builder, var_v), {index++}, "closure");
       }
     }
 
