@@ -155,7 +155,7 @@ void addGCSymbols(Module& mod) {
                      false, // constant?
                      GlobalVariable::ExternalLinkage,
                      nullptr, // no initialiser
-                     "sizeLeft",
+                     "smallSizeLeft",
                      heap,
                      GlobalVariable::NotThreadLocal,
                      0, // not to be treated as a GC root!
@@ -275,7 +275,6 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
 
   std::cout << "Time: " << (int)(elapsed_seconds.count()*1000) << "ms\n"
             << "Result: " << double_res << "(double), " << res << "(int)\n";
-
 
   return EXIT_SUCCESS;
 }
