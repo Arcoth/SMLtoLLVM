@@ -300,13 +300,15 @@ Value* storeValue(IRBuilder<>& builder, Value* value, Value* ptr) {
   return ptr;
 }
 
+Value* unboxedValue(IRBuilder<>& builder, Value* x) {
+  return builder.CreateAShr(x, GC::valueFlagLength, "unboxed_int");
+}
 
 // expects a value of generic pointer tpye,
 Value* unboxInt(IRBuilder<>& builder, Value* x) {
   if (x->getType()->isIntegerTy())
     return x;
-  return builder.CreateAShr(builder.CreatePtrToInt(x, genericIntType(*builder.GetInsertBlock()->getModule()), "ptr_to_int"),
-                            GC::valueFlagLength, "unboxed_int");
+  return unboxedValue(builder, builder.CreatePtrToInt(x, genericIntType(*builder.GetInsertBlock()->getModule()), "ptr_to_int"));
 }
 
 Value* unboxRealFromInt(IRBuilder<>& builder, Value* x) {
@@ -589,9 +591,10 @@ Value* compileFunction(IRBuilder<>* builder,
   auto& [fn_var, fn_lty, fn_body] = get<FN>(expression);
   auto free_vars = freeVars(expression);
 
-  const bool isRealFunction = isReal(fn_lty);
+  const bool isRealFunction = isReal(fn_lty),
+              isIntFunction = isInteger(fn_lty);
 
-  auto fun_type = isInteger(fn_lty)? intFunctionType(module) :
+  auto fun_type = isIntFunction? intFunctionType(module) :
                   isRealFunction? realFunctionType(module) : genericFunctionType(ctx);
 
   // Create the hoisted function.
@@ -622,9 +625,11 @@ Value* compileFunction(IRBuilder<>* builder,
   }
 
   if (isRealFunction)
-    inner_variables[fn_var] = unboxRealFromInt(fun_builder, F->arg_begin()); // first argument is the argument
+    inner_variables[fn_var] = unboxRealFromInt(fun_builder, F->arg_begin());
+  else if (isIntFunction)
+    inner_variables[fn_var] = unboxedValue(fun_builder, F->arg_begin());
   else
-    inner_variables[fn_var] = F->arg_begin(); // first argument is the argument
+    inner_variables[fn_var] = F->arg_begin();
 
 
   std::vector<Type*> types{fun_type->getPointerTo()};
