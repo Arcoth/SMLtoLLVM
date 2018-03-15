@@ -213,7 +213,7 @@ lexp const* outermostClosedLet(lexp const& exp) {
 }
 
 SMLTranslationUnit::SMLTranslationUnit(lexp const& exp, ImportsVector imports, llvm::Module* mod)
-  : importTree(std::move(imports)), exportedLexp(exp), module(std::move(mod)) {
+  : importTree(std::move(imports)), module(std::move(mod)), exportedLexp(exp) {
   auto fn = get_if<FN>(&exportedLexp);
   if (!fn)
     throw CompileFailException{"SMLTranslationUnit(lexp const&): expression not a function"};
@@ -278,15 +278,22 @@ Value* box(IRBuilder<>& builder, Value* x) {
 Value* getBoxedValue(IRBuilder<>& builder, Value* value) {
   if (value->getType()->isIntegerTy())
     return boxIntNoCast(builder, value);
+  if (value->getType()->isDoubleTy())
+    return boxRealInInt(builder, value);
   return value;
 }
 
 // Cast the second argument to a pointer to int if the first one is an int.
 // Return appropriately casted pointer to stored location.
 Value* storeValue(IRBuilder<>& builder, Value* value, Value* ptr) {
+  auto& mod = *builder.GetInsertBlock()->getModule();
   if (value->getType()->isIntegerTy()) {
     ptr = builder.CreatePointerCast(ptr, value->getType()->getPointerTo(heapAddressSpace), "int_store");
     builder.CreateStore(boxIntNoCast(builder, value), ptr);
+  }
+  else if (value->getType()->isDoubleTy()) {
+    ptr = builder.CreatePointerCast(ptr, genericIntType(mod)->getPointerTo(heapAddressSpace), "float_in_int_store");
+    builder.CreateStore(boxRealInInt(builder, value), ptr);
   }
   else
     builder.CreateStore(value, ptr);
