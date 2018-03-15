@@ -80,7 +80,7 @@ struct symbol_rep {
   ConstantInt* value;
 };
 
-using ImportsVector = boost::container::vector<std::pair<boost::container::string, std::array<int, 2>>>;
+using ImportsVector = boost::container::vector<std::pair<boost::container::string, boost::container::vector<int>>>;
 
 class SMLTranslationUnit {
 public:

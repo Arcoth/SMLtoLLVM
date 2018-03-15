@@ -24,14 +24,15 @@ ImportsVector parseImports(std::istream& is) {
 
   ImportsVector tree;
   for (std::string pid_label; (is >> pid_label) && pid_label == "Pid";) {
-    std::string pid;
+    boost::container::string pid;
     is >> pid;
 
     // While the next character is a digit...
-    while(std::isdigit((is >> std::ws).peek())) {
-      int a, b;
-      is >> a >> b;
-      tree.emplace_back(pid.c_str(), std::array<int, 2>{{a, b}});
+    for (std::string line; std::isdigit((is >> std::ws).peek()) && getline(is, line);) {
+      std::istringstream line_stream(line);
+      tree.emplace_back(pid, boost::container::vector<int>{});
+      for (int x; line_stream >> x;)
+        tree.back().second.emplace_back(x);
     }
   }
   return tree;
@@ -127,11 +128,11 @@ int main(int argc, char** argv) try
   addGCSymbols(*module);
   SMLCompiler::compile_top(unit);
 
-  SMLCompiler::performOptimisationPasses(*module);
-
   // Print out all of the generated code.
   outs() << "\n\n\n\nPRINTING LLVM MODULE CONTENTS:\n\n";
   module->print(outs(), nullptr);
+
+  SMLCompiler::performOptimisationPasses(*module);
 
   if (verifyModule(*module, &errs())) {
     errs() << "\nThe code is ill-formed!\n\n";
