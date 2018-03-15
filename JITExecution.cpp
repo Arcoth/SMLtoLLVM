@@ -1,5 +1,6 @@
 #include "Compiler/compile.hpp"
 #include "GCPlugin/GCBasicConstants.hpp"
+#include "GCPlugin/GC.h"
 #include "JITExecution.hpp"
 
 #include "SMLLibrary.hpp"
@@ -53,11 +54,9 @@ void performOptimisationPasses(Module& mod) {
 
   fpm.doInitialization();
 
-  for (auto& fun : mod) {
-    outs() << "Performing optimisation passes on " << fun.getName() << '\n';
+  outs() << "Performing optimisation passes\n";
+  for (auto& fun : mod)
     fpm.run(fun);
-  }
-
 }
 
 void performStatepointsPass(Module& mod) {
@@ -78,9 +77,9 @@ void performStatepointsPass(Module& mod) {
   fpm.add(createPlaceSafepointsPass());
   fpm.doInitialization();
 
+  outs() << "Performing GC passes\n";
   for (auto& fun : mod) {
     fun.setGC("statepoint-example");
-    outs() << "Performing GC pass on " << fun.getName() << '\n';
     fpm.run(fun);
   }
 
@@ -99,7 +98,6 @@ public:
 
   uint8_t* allocateDataSection(uintptr_t Size, unsigned Alignment, unsigned SectionID, StringRef SectionName,
                                bool readOnly) override {
-    outs() << "Allocating " << Size << " bytes for " << SectionName << '\n';
     auto p = SectionMemoryManager::allocateDataSection(Size, Alignment, SectionID, SectionName, readOnly);
     if (SectionName == ".llvm_stackmaps") {
       _stackmap = p;
@@ -221,28 +219,20 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
     return EXIT_FAILURE;
   }
 
-  sys::DynamicLibrary gclib = sys::DynamicLibrary::getPermanentLibrary("SMLtoLLVM/libSML_GC.so", &err_str);
-  if (!gclib.isValid()){
-    errs() << "Could not load GC library: " << err_str;
-    return EXIT_FAILURE;
-  }
+  EE->addGlobalMapping(module->getFunction("cleanupSmallHeap"), (void*)&cleanupSmallHeap);
+  EE->addGlobalMapping(module->getFunction("cleanupMutableHeap"), (void*)&cleanupMutableHeap);
+  EE->addGlobalMapping(module->getGlobalVariable("referenceHeapPtr"), &referenceHeapPtr);
+  EE->addGlobalMapping(module->getGlobalVariable("referenceSizeLeft"), &referenceSizeLeft);
+  EE->addGlobalMapping(module->getGlobalVariable("heapPtr"), &heapPtr);
+  EE->addGlobalMapping(module->getGlobalVariable("smallSizeLeft"), &smallSizeLeft);
 
   EE->generateCodeForModule(module);
 
   assert(memManager->stackMap());
-  *(void**)gclib.getAddressOfSymbol("StackMapPtr") = memManager->stackMap();
+  StackMapPtr = memManager->stackMap();
 
-  std::unordered_map<void*, std::size_t> closureLengths;
   for (auto [fun, len] : unit.closureLength)
     closureLengths[(void*)EE->getPointerToFunction(fun)] = len;
-  *(void**)gclib.getAddressOfSymbol("closureLengths") = &closureLengths;
-
-  // Invoke the GC initialisation (allocate and set up the heap pointers)
-  auto gc_init = (void(*)())gclib.getAddressOfSymbol("init");
-  if (!gc_init){
-    errs() << "Could not find GC initialisation function!";
-    return EXIT_FAILURE;
-  }
 
   std::vector<genericPointerTypeNative> imports{0}; // record tag takes one spot
   for (auto& [pid, indices] : unit.importTree) {
@@ -251,7 +241,7 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
   }
 
   //! Start measuring at the GC initialisation.
-  gc_init();
+  init();
 
   // Get the structured record
   auto exportFunction = (genericFunctionTypeNative*)EE->getFunctionAddress("export");
@@ -273,7 +263,7 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
   auto result_time = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double> elapsed_seconds = result_time-start_time;
 
-  std::cout << "Time: " << (int)(elapsed_seconds.count()*1000) << "ms\n"
+  std::cout << "\nTime: " << (int)(elapsed_seconds.count()*1000) << "ms\n"
             << "Result: " << double_res << "(double), " << res << "(int)\n";
 
   return EXIT_SUCCESS;
