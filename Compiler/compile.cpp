@@ -300,6 +300,10 @@ Value* storeValue(IRBuilder<>& builder, Value* value, Value* ptr) {
   return ptr;
 }
 
+Type* boxedType(Module& m, Type* t) {
+  return t->isDoubleTy()? genericIntType(m) : t;
+}
+
 Value* unboxedValue(IRBuilder<>& builder, Value* x) {
   return builder.CreateAShr(x, GC::valueFlagLength, "unboxed_int");
 }
@@ -476,7 +480,7 @@ Value* record(IRBuilder<>& builder, Rng const& values ) {
   // The type used to hold the results while they're being computed.
   std::vector<Type*> record_elem_types{genericIntType(module)};
   for (auto x : values)
-    record_elem_types.push_back(x->getType());
+    record_elem_types.push_back(boxedType(module, x->getType()));
   auto record_type = StructType::create(record_elem_types);
 
   assert(DataLayout{&module}.getTypeAllocSize(record_type)== std::size(record_elem_types) * 8);
@@ -637,7 +641,7 @@ Value* compileFunction(IRBuilder<>* builder,
     auto var_it = variables.find(var);
     if (var_it == variables.end())
       throw CompileFailException{"FN: Captured variable " + std::to_string(var) + " not defined in enclosing scope"};
-    types.push_back(var_it->second->getType());
+    types.push_back(boxedType(module, var_it->second->getType()));
   }
 
   auto wrapper_type = StructType::create(types, F->getName().str() + "Wrapper");
