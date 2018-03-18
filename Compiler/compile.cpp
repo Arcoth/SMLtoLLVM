@@ -231,9 +231,12 @@ SMLTranslationUnit::SMLTranslationUnit(lexp const& exp, ImportsVector imports, l
   }
 }
 
-Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type, bool _mutable = false, std::size_t n = 1) {
+Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type,
+                        GC::Heap heap = GC::Heap::Young, std::size_t n = 1) {
   static const auto size_type = genericIntType(module);
-  auto alloc_fun = module.getFunction(_mutable? mutableAllocFun : immutableAllocFun);
+  auto alloc_fun = module.getFunction(heap == GC::Heap::Mutable? mutableAllocFun :
+                                      heap == GC::Heap::Young? smallAllocFun :
+                                      heap == GC::Heap::Old? largeAllocFun : throw std::runtime_error{""});
   if (!alloc_fun)
     throw CompileFailException{"Allocation function not found!"};
 
@@ -335,6 +338,8 @@ struct AstContext {
   bool isFinalExpression;      // expression whose value is immediately yielded by a function
   bool isCtorArgument;         // Argument to a construtor
   bool moduleExportExpression; // The top-most lambda expression
+  bool isListCPSFunction;      // True if this function stores the resulting list in parameter %3
+  lexp* enclosingFunctionExpr; // If isListCPSFunction, this stores the expression for creating the second function definition
 };
 
 Value* compile(IRBuilder<>& builder,
@@ -452,7 +457,7 @@ Value* compile_primop(IRBuilder<>& builder,
     }
     case MAKEREF: {
       auto val = arg_value();
-      result = createAllocation(module, builder, val->getType(), true);
+      result = createAllocation(module, builder, val->getType(), GC::Heap::Mutable);
       storeValue(builder, val, result);
       return builder.CreatePointerCast(result, genericPointerType(module.getContext()), "ref_ptr");
     }
@@ -475,7 +480,7 @@ Value* compile_primop(IRBuilder<>& builder,
 
 // the first 64 bit is the tag!
 template <typename Rng>
-Value* record(IRBuilder<>& builder, Rng const& values ) {
+Value* record(IRBuilder<>& builder, Rng const& values, GC::Heap heap = GC::Heap::Young ) {
   auto& module = *builder.GetInsertBlock()->getModule();
   // The type used to hold the results while they're being computed.
   std::vector<Type*> record_elem_types{genericIntType(module)};
@@ -489,17 +494,17 @@ Value* record(IRBuilder<>& builder, Rng const& values ) {
   auto tag_v = ConstantInt::get(genericIntType(module), (std::size(record_elem_types) << GC::recordFlagLength) | GC::lengthTag);
   auto aggregate_v = builder.CreateInsertValue(UndefValue::get(record_type), tag_v, {0}, "record_tag");
   for (unsigned i = 0; i < std::size(values); ++i)
-    aggregate_v = builder.CreateInsertValue(aggregate_v, boxedValue(builder, values[i]), {i+1}, "rcd_val_ptr");
+    aggregate_v = builder.CreateInsertValue(aggregate_v, boxedValue(builder, values[i]), {i+1}, "record_value");
 
-  auto storage = createAllocation(module, builder, record_type);
+  auto storage = createAllocation(module, builder, record_type, heap);
   builder.CreateStore(aggregate_v, storage);
 
-  return storage;
+  return builder.CreatePointerCast(storage, genericPointerType(module.getContext()), "record_ptr");
 }
 
 template <std::size_t N>
-Value* record(IRBuilder<>& builder, Value* const (&values)[N] ){
-  return record<decltype(values)>(builder, values);
+Value* record(IRBuilder<>& builder, Value* const (&values)[N], GC::Heap heap = GC::Heap::Young ){
+  return record<decltype(values)>(builder, values, heap);
 }
 
 Value* getTagPtrFromRecordPtr(IRBuilder<>& builder, Value* rcd) {
@@ -584,6 +589,27 @@ inline bool isReal(lty l) {
   return false;
 }
 
+char const* nameForFunction(lvar v, bool cps) {
+  auto n = new char[16] {};
+  std::sprintf(n, cps? "cps_lambda.v%d" : "lambda.v%d", v);
+  return n;
+}
+
+bool isFixpointVar(lexp& fn_exp, AstContext const& astContext) {
+  return fn_exp.index() == VAR
+      && get<VAR>(fn_exp) == astContext.fixPointVariable;
+}
+
+// To cover regular and list-CPS cases
+void yieldValue(IRBuilder<>& builder, Value* v, AstContext astContext) {
+  if (astContext.isListCPSFunction) {
+    builder.CreateStore(v, builder.GetInsertBlock()->getParent()->arg_begin() + 2);
+    builder.CreateRetVoid();
+  }
+  else
+    builder.CreateRet(box(builder, v));
+}
+
 Value* compileFunction(IRBuilder<>* builder,
                        lexp& expression,
                        std::map<PLambda::lvar, Value*> const& variables,
@@ -595,21 +621,18 @@ Value* compileFunction(IRBuilder<>* builder,
   auto& [fn_var, fn_lty, fn_body] = get<FN>(expression);
   auto free_vars = freeVars(expression);
 
+  FunctionType* fun_type;
+
   const bool isRealFunction = isReal(fn_lty),
               isIntFunction = isInteger(fn_lty);
 
-  auto fun_type = isIntFunction? intFunctionType(module) :
-                  isRealFunction? realFunctionType(module) : genericFunctionType(ctx);
+  fun_type = isIntFunction? intFunctionType(module, astContext.isListCPSFunction) :
+            isRealFunction? realFunctionType(module, astContext.isListCPSFunction) :
+                            genericFunctionType(ctx, astContext.isListCPSFunction);
 
   // Create the hoisted function.
-  char const* name;
-  if (astContext.moduleExportExpression)
-    name = "export";
-  else {
-    auto n = new char[16] {};
-    std::sprintf(n, "lambda.v%d", fn_var);
-    name = n;
-  }
+  std::cout << fn_var << " is CPS? " << astContext.isListCPSFunction << '\n';
+  char const* name = astContext.moduleExportExpression? "export" : nameForFunction(fn_var, astContext.isListCPSFunction);
   auto F = Function::Create(fun_type, Function::ExternalLinkage, name, &module);
 
   unit.closureLength.emplace_back(F, free_vars.size()+1);
@@ -628,13 +651,13 @@ Value* compileFunction(IRBuilder<>* builder,
       inner_variables[var] = fun_builder.CreateLoad(fun_builder.CreateConstGEP1_32(env, index++, "captured_ptr"), "captured");
   }
 
-  if (isRealFunction)
+  // Don't unbox in CPS functions, they're not meant to be generic
+  if (isRealFunction && !astContext.isListCPSFunction)
     inner_variables[fn_var] = unboxRealFromInt(fun_builder, F->arg_begin());
-  else if (isIntFunction)
+  else if (isIntFunction && !astContext.isListCPSFunction)
     inner_variables[fn_var] = unboxedValue(fun_builder, F->arg_begin());
   else
     inner_variables[fn_var] = F->arg_begin();
-
 
   std::vector<Type*> types{fun_type->getPointerTo()};
   for (auto var : free_vars) {
@@ -644,21 +667,23 @@ Value* compileFunction(IRBuilder<>* builder,
     types.push_back(boxedType(module, var_it->second->getType()));
   }
 
-  auto wrapper_type = StructType::create(types, F->getName().str() + "Wrapper");
-
   if (astContext.isBodyOfFixpoint)
     astContext.isBodyOfFixpoint = false;
   else
     astContext.fixPointVariable = -1;
   astContext.isFinalExpression = true;
 
-  auto newAstCtx = astContext;
+  AstContext newAstCtx = astContext;
+  newAstCtx.enclosingFunctionExpr = &expression;
   newAstCtx.moduleExportExpression = false;
   if (auto retv = compile(fun_builder, fn_body, inner_variables, unit, newAstCtx))
-    fun_builder.CreateRet(box(fun_builder, retv));
+    yieldValue(fun_builder, retv, astContext);
 
+  if (astContext.isListCPSFunction)
+    return F;
   if (!astContext.moduleExportExpression) {
     assert(builder && "Builder must be non-zero!");
+    auto wrapper_type = StructType::create(types, F->getName().str() + "Wrapper");
     auto aggregate_v = builder->CreateInsertValue(UndefValue::get(wrapper_type), F, {0}, "fun_ptr_slot"); // store function pointer...
     {
       unsigned index = 1;
@@ -669,7 +694,7 @@ Value* compileFunction(IRBuilder<>* builder,
     }
 
     // Allocate and fill the closure with captured variables.
-    auto memory = createAllocation(module, *builder, wrapper_type, false);
+    auto memory = createAllocation(module, *builder, wrapper_type);
     builder->CreateStore(aggregate_v, memory);
     return builder->CreatePointerCast(memory, genericPointerType(ctx), "clos_ptr_cast");
   }
@@ -705,38 +730,57 @@ Value* compile(IRBuilder<>& builder,
       return ConstantFP::get(Type::getDoubleTy(ctx), i);
     }
     case FN: {
+      astContext.isListCPSFunction = false; // We can do this here, as the CPS code below calls compileFunction directly
       return compileFunction(&builder, expression, variables, unit, astContext);
     }
     case LET: {
       auto& [let_var, assign_exp, body_exp] = get<LET>(expression);
-      if (body_exp.get().index() == VAR        // If the body is a variable,
-       && get<VAR>(body_exp.get()) == let_var) // and if that variable is the LET variable,
-          return recurse(assign_exp);    // just return the assignment.
-
-      /*
-        Perform inlining. If a function is only called once, substitute the function body as a let-expression.
-      */
-      if (auto function_exp = get_if<FN>(&assign_exp)) {
+//      if (body_exp.get().index() == VAR        // If the body is a variable,
+//       && get<VAR>(body_exp.get()) == let_var) // and if that variable is the LET variable,
+//          return recurse(assign_exp);    // just return the assignment.
+      {
         auto freeOccursInLet = freeVarOccurrences(body_exp, &expression);
         auto [occur_first, occur_last] = freeOccursInLet.equal_range(let_var);
         if (std::distance(occur_first, occur_last) == 1) {
           auto [var, occurrence] = *occur_first;
-          auto app_exp = get_if<APP>(occurrence.enclosing_exp);
-          if (app_exp && &app_exp->first.get() == occurrence.holding_exp) {
-            std::cout << "Found a single application of v" << var << '\n';
-            // Replace the application with a LET fnparam = argument IN fnbody END
-            auto argument = get<1>(*app_exp).get();
-            occurrence.enclosing_exp->emplace<LET>(get<0>(*function_exp),
-                                                   argument,
-                                                   get<2>(*function_exp));
-            return compile(builder, body_exp, variables, unit, astContext);
+
+          /*
+            Perform eta-reduction.
+            If a function is only called once, substitute the function body as a let-expression.
+          */
+          bool eta_reduced = false;
+          if (auto function_exp = get_if<FN>(&assign_exp)) {
+            auto app_exp = get_if<APP>(occurrence.enclosing_exp);
+            if (app_exp && &app_exp->first.get() == occurrence.holding_exp) {
+              eta_reduced = true;
+              std::cout << "Found a single application of v" << var << '\n';
+              // Replace the application with a LET fnparam = argument IN fnbody END
+              auto argument = get<1>(*app_exp).get();
+              occurrence.enclosing_exp->emplace<LET>(get<0>(*function_exp),
+                                                     argument,
+                                                     get<2>(*function_exp));
+            }
+          }
+
+          bool substituted = false;
+          if (!eta_reduced
+           && (occurrence.enclosing_exp == &expression        // immediately enclosed by this exp,
+            ||  occurrence.enclosing_exp->index() == CON
+             && occurrence.enclosing_exp == &body_exp)) {       // or a argument of an immediately enclosed constructor
+            *occur_first->second.holding_exp = assign_exp;
+            substituted = true;
+          }
+
+          // If either of the reductions has been performed:
+          if (eta_reduced || substituted) {
+            expression = lexp{body_exp};
+            return recurse(expression);    // just return the body.
           }
         }
-        else if (std::distance(occur_first, occur_last) == 0)
-          return recurse(body_exp);
       }
+
       // If a record is only selected from, we can avoid constructing it in the first place.
-      else if (auto record_exp = get_if<RECORD>(&assign_exp)) {
+      if (auto record_exp = get_if<RECORD>(&assign_exp)) {
         auto freeOccursInLet = freeVarOccurrences(body_exp, &expression);
         auto [occur_first, occur_last] = freeOccursInLet.equal_range(let_var);
         bool onlySelects = std::all_of(occur_first, occur_last, [] (auto& o) {
@@ -757,11 +801,14 @@ Value* compile(IRBuilder<>& builder,
           }
           lexp result = body_exp;
           int elem_index = 0;
-          for (auto& rcd_elem : *record_exp)
+          for (auto& rcd_elem : *record_exp) {
+            std::cout << "Emplaced " << createNewVarIndex(let_var, elem_index) << '\n';
             result.emplace<LET>(createNewVarIndex(let_var, elem_index++),
                            rcd_elem,
                            lexp{result});
-          return recurse(result);
+          }
+          expression = result;
+          return recurse(expression);
         }
       }
 
@@ -793,16 +840,22 @@ Value* compile(IRBuilder<>& builder,
       else
         fun_type = genericFunctionType(ctx);
 
-      if (fn_exp.get().index() == VAR
-       && get<VAR>(fn_exp.get()) == astContext.fixPointVariable) {
+      if (isFixpointVar(fn_exp.get(), astContext)
+       && (astContext.isFinalExpression || !astContext.isListCPSFunction)) {
         std::cout << "Replacing app of " << astContext.fixPointVariable << ", final: " << std::boolalpha << astContext.isFinalExpression << "\n";
         auto recursive_function = builder.GetInsertBlock()->getParent();
 
-        auto result = builder.CreateCall(recursive_function ,
-                                         {arg_val, recursive_function->arg_begin()+1}, "recursive_call");
+        Value* result;
+        if (astContext.isListCPSFunction)
+          result = builder.CreateCall(recursive_function,
+                                           {arg_val, recursive_function->arg_begin()+1,
+                                                     recursive_function->arg_begin()+2});
+        else
+          result = builder.CreateCall(recursive_function,
+                                           {arg_val, recursive_function->arg_begin()+1}, "recursive_call");
 
         if (astContext.isFinalExpression) {
-          builder.CreateRet(result);
+          yieldValue(builder, result, astContext);
           return nullptr;
         }
         return result;
@@ -943,7 +996,57 @@ Value* compile(IRBuilder<>& builder,
 
     case CON: {
       auto& [constr, tycs, argument] = get<CON>(expression);
-      auto symrep = unit.symbolRepresentation.at(get<Symbol::symbol>(constr));
+      auto& symbol = get<Symbol::symbol>(constr);
+      auto symrep = unit.symbolRepresentation.at(symbol);
+
+      Function* const parentFunction = builder.GetInsertBlock()->getParent();
+      //! Optimisation for recursive list construction
+      if (astContext.isFinalExpression && get<string>(symbol) == "::") {
+        outs() << "Cons in " << parentFunction->getName() << '\n';
+        if (auto rec = std::get_if<RECORD>(&argument)) {
+          auto recursive_app = get_if<APP>(&rec->at(1));
+          outs() << "rec " << recursive_app << "\n";
+          if (recursive_app && isFixpointVar(get<0>(*recursive_app), astContext))
+          {
+            outs() << "Making " << get<lvar>(get<FN>(*astContext.enclosingFunctionExpr)) << " CPS\n";
+
+            Function *recursion_function;
+
+            if (!astContext.isListCPSFunction) {
+              if (auto p = module.getFunction(nameForFunction(get<lvar>(get<FN>(*astContext.enclosingFunctionExpr)), true)))
+                recursion_function = p;
+              else {
+                auto newAstCtx = astContext;
+                newAstCtx.isListCPSFunction = true;
+                newAstCtx.isBodyOfFixpoint = true;
+                recursion_function = cast<Function>(compileFunction(&builder, *newAstCtx.enclosingFunctionExpr, variables, unit, newAstCtx));
+              }
+            }
+            else
+              recursion_function = parentFunction;
+
+            auto&  [fn_exp, arg_exp] = *recursive_app;
+            auto arg_val = recurse(arg_exp, false); // the argument to the call
+            auto cons_val = recurse(rec->at(0), false);
+            auto result_record = record(builder, {cons_val, ConstantPointerNull::get(genericPointerType(ctx))}, GC::Heap::Old);
+
+            // store the currently half-constructed cons node in the parameter
+            if (astContext.isListCPSFunction)
+              builder.CreateStore(result_record, builder.CreateConstGEP1_32(parentFunction->arg_begin() + 2, 2, "list_cps_slot"));
+
+            // Perform the recursive call with the result in the CPS parameter.
+            builder.CreateCall(recursion_function,
+                               {arg_val, parentFunction->arg_begin()+1,
+                                builder.CreatePointerCast(result_record, genericPtrToPtr(ctx), "cps_result_record")});
+            if (!astContext.isListCPSFunction)
+              builder.CreateRet(result_record);
+            else
+              builder.CreateRetVoid();
+            return nullptr;
+          }
+        }
+      }
+
       switch (symrep.type) {
         case symbol_rep::CONSTANT:
           return boxInt(builder, symrep.value);
@@ -968,24 +1071,22 @@ Value* compile(IRBuilder<>& builder,
       astContext.isCtorArgument = false;
       std::vector<Value*> values;
       for (auto& e : elem_exps)
-        values.push_back(recurse(e));
-      auto ptr = record(builder, values);
-      return builder.CreatePointerCast(ptr, genericPointerType(ctx), "rcd_ptr");
+        values.push_back(recurse(e, false));
+      return record(builder, values);
     }
     case SRECORD: {
       std::vector<Value*> values;
       astContext.isFinalExpression = false;
       for (auto& e : get<SRECORD>(expression))
-        values.push_back(recurse(e));
-      auto ptr = record(builder, values);
-      return builder.CreatePointerCast(ptr, genericPointerType(ctx), "srcd_ptr");
+        values.push_back(recurse(e, false));
+      return record(builder, values);
     }
 
     case SELECT: {
       auto& [indices, record] = get<SELECT>(expression);
       if (indices.size() != 1)
         throw UnsupportedException{"Nested indexing"};
-      auto record_v = builder.CreatePointerCast(recurse(record),
+      auto record_v = builder.CreatePointerCast(recurse(record, false),
                                                 genericPointerType(ctx)->getPointerTo(heapAddressSpace));
       return builder.CreateLoad(builder.CreateConstGEP1_32(record_v, indices[0] + 1, "selected_ptr"), "selected");
     }
