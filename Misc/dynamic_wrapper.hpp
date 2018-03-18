@@ -21,7 +21,8 @@ public:
   dynamic_wrapper(Ts&&... ts)
     : _ptr(std::make_unique<T>(std::forward<Ts>(ts)...)){}
 
-  dynamic_wrapper(dynamic_wrapper&&) = default;
+  dynamic_wrapper(dynamic_wrapper&& other)
+    : _ptr(std::make_unique<T>(std::move(other).get())) {}
   dynamic_wrapper(dynamic_wrapper const& other)
     : _ptr(std::make_unique<T>(other.get())) {}
 
