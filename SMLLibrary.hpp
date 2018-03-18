@@ -23,7 +23,7 @@ namespace Timer {
 }
 
 namespace Time {
-  inline genericPointerTypeNative toMilliSeconds(genericPointerTypeNative arg, genericPointerTypeNative[]) {
+  inline genericPointerTypeNative toMilliseconds(genericPointerTypeNative arg, genericPointerTypeNative[]) {
     return boxNative(unboxNative(arg)/(Timer::clock_type::duration::period::den/1000));
   }
 }
@@ -37,7 +37,7 @@ namespace List {
 inline const boost::unordered_map<std::string, boost::container::map<boost::container::vector<int>, genericPointerTypeNative>> libraryIdMap {{
   {"0AAB32C474C86764F4EDD7B5F7975050", {{{{86, 2}}, (genericPointerTypeNative)new genericFunctionTypeNative*[1]{(genericFunctionTypeNative*)0xDEADBEEF}},
                                         {{std::initializer_list<int>{112}}, (genericPointerTypeNative)new genericFunctionTypeNative*[1]{List::hd}}}},
-  {"15264C47F5ED8119799A5101E44495E0", {{{{0, 6}}, (genericPointerTypeNative)new genericFunctionTypeNative*[1]{Time::toMilliSeconds}}}},
+  {"15264C47F5ED8119799A5101E44495E0", {{{{0, 6}}, (genericPointerTypeNative)new genericFunctionTypeNative*[1]{Time::toMilliseconds}}}},
   {"A44C25B0AB637462740A552AFDE72D60", {{{{0, 5}}, (genericPointerTypeNative)new genericFunctionTypeNative*[1]{Timer::startRealTimer}},
                                         {{{0, 7}}, (genericPointerTypeNative)new genericFunctionTypeNative*[1]{Timer::checkRealTimer}}}},
 }};
