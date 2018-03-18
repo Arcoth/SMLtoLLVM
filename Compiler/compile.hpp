@@ -31,15 +31,20 @@ std::multimap<PLambda::lvar, Occurrence> freeVarOccurrences( PLambda::lexp& exp,
 
 inline const int heapAddressSpace = 1;
 
-inline char const* const immutableAllocFun = "allocateImmutable",
+inline char const* const smallAllocFun   = "allocateSmall",
+                 * const largeAllocFun     = "allocateLarge",
                  * const mutableAllocFun = "allocateMutable";
 
 inline auto genericPointerType(LLVMContext& c) {
   return Type::getInt8Ty(c)->getPointerTo(heapAddressSpace);
 }
 
-inline auto closurePointerType(LLVMContext& c) {
+inline auto genericPtrToPtr(LLVMContext& c) {
   return genericPointerType(c)->getPointerTo(heapAddressSpace);
+}
+
+inline auto closurePointerType(LLVMContext& c) {
+  return genericPtrToPtr(c);
 }
 
 inline auto genericIntType(Module& m) {
@@ -52,21 +57,33 @@ inline auto tagType(Module& m) {
 }
 
 // The type of a function that takes an integer.
-inline auto intFunctionType(Module& m) {
+inline auto intFunctionType(Module& m, bool isCPS = false) {
   auto& ctx = m.getContext();
+  if (isCPS)
+    return FunctionType::get(Type::getVoidTy(ctx),
+                             {genericIntType(m),        // the argument
+                              closurePointerType(ctx),  // the environment.
+                              genericPointerType(ctx)->getPointerTo(heapAddressSpace)}, // the CPS pointer.
+                             false); // not variadic
   return FunctionType::get(genericPointerType(ctx),   // the return value
-                           {genericIntType(m),  // the argument
+                           {genericIntType(m),        // the argument
                             closurePointerType(ctx)}, // the environment.
-                           false); // not variadic
+                           false);                    // not variadic
 }
 
 // The type of a function that takes an integer.
-inline auto realFunctionType(Module& m) {
-  return intFunctionType(m);
+inline auto realFunctionType(Module& m, bool isCPS = false) {
+  return intFunctionType(m, isCPS);
 }
 
 // The default function type of any function in the PLC.
-inline auto genericFunctionType(LLVMContext& ctx) {
+inline auto genericFunctionType(LLVMContext& ctx, bool isCPS = false) {
+  if (isCPS)
+    return FunctionType::get(Type::getVoidTy(ctx),
+                             {genericPointerType(ctx),  // the argument
+                              closurePointerType(ctx),  // the environment.
+                              genericPointerType(ctx)->getPointerTo(heapAddressSpace)}, // the CPS pointer.
+                             false); // not variadic
   return FunctionType::get(genericPointerType(ctx),   // the return value
                            {genericPointerType(ctx),  // the argument
                             closurePointerType(ctx)}, // the environment.

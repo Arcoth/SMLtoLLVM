@@ -61,25 +61,26 @@ struct SelfRelocatingHeap {
   }
 };
 
-struct OldHeapT : SelfRelocatingHeap {
-private:
-  heapUnit* heap_ptr;
-  uint64_t heap_size_left;
-
-public:
-  OldHeapT() : SelfRelocatingHeap(Heap::Old, heap_ptr, heap_size_left, 4.0, 1'000'000),
-               heap_size_left(size) {}
-} OldHeap;
-
 heapUnit *referenceHeapPtr; // first free spot in the mutator heap
 uint64_t referenceSizeLeft = 1'000;
+
+heapUnit* largeHeapPtr;
+uint64_t largeSizeLeft = 40'000'000;
+
+SelfRelocatingHeap OldHeap {
+  Heap::Old,
+  largeHeapPtr,
+  largeSizeLeft,
+  4.0,
+  largeSizeLeft
+};
 
 SelfRelocatingHeap MutableHeap{
   Heap::Mutable,
   referenceHeapPtr,
   referenceSizeLeft,
   4.0,
-  1'000
+  referenceSizeLeft
 };
 
 std::unordered_map<void*, std::size_t> closureLengths;
@@ -119,7 +120,11 @@ Heap determineSource(heapUnit* ptr) {
 uint64_t getRecordLength(uint64_t tag) {
   switch (tag & 0b11) {
   case 0:
+    try {
     return closureLengths.at((void*)tag);
+    } catch(...) {
+      std::cerr << "Tag was " << std::hex << tag << '\n'; throw;
+    }
     break;
   case 0b01:
     return (tag & UINT32_MAX) >> 2;
@@ -353,7 +358,8 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap) {
   currentStackPtr = stackPtr;
 #if GC_DEBUG_LOG_LVL >= 1
   static int counter;
-  std::cout << "\nCleaning " << (int)heap << "; " << ++counter << "th collection.\n";
+  int counter_current = ++counter;
+  std::cout << "\nCleaning " << (int)heap << "; " << counter_current << "th collection.\n";
 #endif // GC_DEBUG_LOG_LVL
   switch(heap) {
     case Heap::Young:
@@ -392,21 +398,20 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap) {
   }
 
 #if GC_DEBUG_LOG_LVL >= 1
-  std::cout << "Finished " << counter << "\n\n";
+  std::cout << "Finished " << counter_current << "\n\n";
 #endif // GC_DEBUG_LOG_LVL
-}
-
-extern "C" [[gnu::naked]] void cleanupSmallHeap()   {
-  asm("mov %rsp, %rdi\n"
-      "jmp cleanup_small_heap");
-}
-extern "C" [[gnu::naked]] void cleanupMutableHeap()  {
-  asm("mov %rsp, %rdi\n"
-      "jmp cleanup_mutable_heap");
 }
 
 extern "C" void cleanup_small_heap(uint8_t* stackPtr) {
   cleanup_heap(stackPtr, Heap::Young);
+
+  // Overwrite the cleaned memory to recognise wrong reads.
+#ifdef GC_MEMSET
+  memset(heapBase, 0x7F, heapSize * sizeof(heapUnit));
+#endif
+}
+extern "C" void cleanup_old_heap(uint8_t* stackPtr) {
+  cleanup_heap(stackPtr, Heap::Old);
 
   // Overwrite the cleaned memory to recognise wrong reads.
 #ifdef GC_MEMSET
@@ -420,4 +425,17 @@ extern "C" void cleanup_mutable_heap(uint8_t* stackPtr) {
 #ifdef GC_MEMSET
   memset(referenceHeapBase, 0x7F, referenceHeapSize * sizeof(heapUnit));
 #endif
+}
+
+extern "C" [[gnu::naked]] void cleanupSmallHeap()   {
+  asm("mov %rsp, %rdi\n"
+      "jmp cleanup_small_heap");
+}
+extern "C" [[gnu::naked]] void cleanupLargeHeap()   {
+  asm("mov %rsp, %rdi\n"
+      "jmp cleanup_old_heap");
+}
+extern "C" [[gnu::naked]] void cleanupMutableHeap()  {
+  asm("mov %rsp, %rdi\n"
+      "jmp cleanup_mutable_heap");
 }

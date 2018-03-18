@@ -139,61 +139,55 @@ Value* insertAllocation(LLVMContext& ctx, IRBuilder<>& builder, Function* fun, F
    heap base and size scalars linked in by the runtime. */
 void addGCSymbols(Module& mod) {
   auto& ctx = mod.getContext();
-  auto variable_type = Type::getInt64Ty(ctx)->getPointerTo(heapAddressSpace);
-  auto heap = new GlobalVariable(mod, Type::getInt64Ty(ctx)->getPointerTo(heapAddressSpace),
+  auto global = [&] (auto type, auto name) {
+    return new GlobalVariable(mod, type,
                      false, // constant?
                      GlobalVariable::ExternalLinkage,
                      nullptr, // no initialiser
-                     "heapPtr",
+                     name,
                      nullptr, // no predecessor
                      GlobalVariable::NotThreadLocal,
                      0, // not to be treated as a GC root!
-                     true); // externally initialised
-  auto left = new GlobalVariable(mod, Type::getInt64Ty(ctx),
-                     false, // constant?
-                     GlobalVariable::ExternalLinkage,
-                     nullptr, // no initialiser
-                     "smallSizeLeft",
-                     heap,
-                     GlobalVariable::NotThreadLocal,
-                     0, // not to be treated as a GC root!
-                     true); // externally initialised
+                     true);
+  };
 
-  auto mut_heap = new GlobalVariable(mod, variable_type,
-                     false, // constant?
-                     GlobalVariable::ExternalLinkage,
-                     nullptr, // no initialiser
-                     "referenceHeapPtr",
-                     nullptr,
-                     GlobalVariable::NotThreadLocal,
-                     0, // not to be treated as a GC root!
-                     true); // externally initialised
-  auto mut_left = new GlobalVariable(mod, Type::getInt64Ty(ctx),
-                     false, // constant?
-                     GlobalVariable::ExternalLinkage,
-                     nullptr, // no initialiser
-                     "referenceSizeLeft",
-                     mut_heap,
-                     GlobalVariable::NotThreadLocal,
-                     0, // not to be treated as a GC root!
-                     true); // externally initialised
+  auto heap_unit = Type::getInt64Ty(ctx);
+  auto ptr_type = heap_unit->getPointerTo(heapAddressSpace);
 
-  auto collect = Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
+  auto heap = global(ptr_type, "heapPtr");
+  auto left = global(heap_unit, "smallSizeLeft");
+
+  auto mut_heap = global(ptr_type, "referenceHeapPtr");
+  auto mut_left = global(heap_unit, "referenceSizeLeft");
+
+  auto large_heap = global(ptr_type, "largeHeapPtr");
+  auto large_left = global(heap_unit, "largeSizeLeft");
+
+
+  auto collect_small = Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
                    invokeSmallHeapCollection, &mod);
+  auto collect_large = Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
+                   invokeLargeHeapCollection, &mod);
   auto collect_mut = Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
                    invokeMutableHeapCollection, &mod);
 
   auto type = FunctionType::get(genericPointerType(ctx),
                                 {Type::getInt64Ty(ctx)}, false);
 
-  auto immutable_fun = Function::Create(type, GlobalVariable::InternalLinkage,
-                                   immutableAllocFun, &mod),
+  auto small_fun = Function::Create(type, GlobalVariable::InternalLinkage,
+                                   smallAllocFun, &mod),
+       large_fun = Function::Create(type, GlobalVariable::InternalLinkage,
+                                   largeAllocFun, &mod),
        mutable_fun = Function::Create(type, GlobalVariable::InternalLinkage,
                                    mutableAllocFun, &mod);
 
   {
-    IRBuilder<> builder(BasicBlock::Create(ctx, "entry", immutable_fun));
-    builder.CreateRet(insertAllocation(ctx, builder, immutable_fun, collect, heap, left));
+    IRBuilder<> builder(BasicBlock::Create(ctx, "entry", small_fun));
+    builder.CreateRet(insertAllocation(ctx, builder, small_fun, collect_small, heap, left));
+  }
+  {
+    IRBuilder<> builder(BasicBlock::Create(ctx, "entry", large_fun));
+    builder.CreateRet(insertAllocation(ctx, builder, large_fun, collect_large, large_heap, large_left));
   }
   {
     IRBuilder<> builder(BasicBlock::Create(ctx, "entry", mutable_fun));
@@ -221,10 +215,13 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
 
   EE->addGlobalMapping(module->getFunction("cleanupSmallHeap"), (void*)&cleanupSmallHeap);
   EE->addGlobalMapping(module->getFunction("cleanupMutableHeap"), (void*)&cleanupMutableHeap);
+  EE->addGlobalMapping(module->getFunction("cleanupLargeHeap"), (void*)&cleanupLargeHeap);
   EE->addGlobalMapping(module->getGlobalVariable("referenceHeapPtr"), &referenceHeapPtr);
   EE->addGlobalMapping(module->getGlobalVariable("referenceSizeLeft"), &referenceSizeLeft);
   EE->addGlobalMapping(module->getGlobalVariable("heapPtr"), &heapPtr);
   EE->addGlobalMapping(module->getGlobalVariable("smallSizeLeft"), &smallSizeLeft);
+  EE->addGlobalMapping(module->getGlobalVariable("largeHeapPtr"), &largeHeapPtr);
+  EE->addGlobalMapping(module->getGlobalVariable("largeSizeLeft"), &largeSizeLeft);
 
   EE->generateCodeForModule(module);
 
@@ -245,13 +242,13 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
 
   // Get the structured record
   auto exportFunction = (genericFunctionTypeNative*)EE->getFunctionAddress("export");
-  auto start_time = std::chrono::high_resolution_clock::now();
   auto lambda = (genericPointerTypeNative*)exportFunction((genericPointerTypeNative)imports.data(), nullptr);
 
   // Invoke the function with the given index. Indexing starts at 1.
   auto last_fnc = (genericPointerTypeNative*)lambda[functionIndex+1];
 
-  genericIntTypeNative arg = 100'000'000;
+  auto start_time = std::chrono::high_resolution_clock::now();
+  genericIntTypeNative arg = 10'000;
   auto res = (genericIntTypeNative)((genericFunctionTypeNative*) last_fnc[0])
                ((genericPointerTypeNative)((arg << GC::valueFlagLength) + GC::intTag), last_fnc);
 

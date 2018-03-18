@@ -7,6 +7,7 @@ namespace SMLCompiler {
   void performStatepointsPass(llvm::Module&);
 
   inline char const* const invokeSmallHeapCollection = "cleanupSmallHeap";
+  inline char const* const invokeLargeHeapCollection = "cleanupLargeHeap";
   inline char const* const invokeMutableHeapCollection = "cleanupMutableHeap";
 
   // Add the entities required for interaction with the GC runtime.
