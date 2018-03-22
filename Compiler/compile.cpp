@@ -621,14 +621,17 @@ Value* compileFunction(IRBuilder<>* builder,
   auto& [fn_var, fn_lty, fn_body] = get<FN>(expression);
   auto free_vars = freeVars(expression);
 
-  FunctionType* fun_type;
-
   const bool isRealFunction = isReal(fn_lty),
               isIntFunction = isInteger(fn_lty);
 
-  fun_type = isIntFunction? intFunctionType(module, astContext.isListCPSFunction) :
-            isRealFunction? realFunctionType(module, astContext.isListCPSFunction) :
-                            genericFunctionType(ctx, astContext.isListCPSFunction);
+
+  FunctionType* fun_type;
+  if (astContext.moduleExportExpression)
+    fun_type =FunctionType::get(genericPointerType(ctx), {genericPointerType(ctx)}, false);
+  else
+    fun_type = isIntFunction? intFunctionType(module, astContext.isListCPSFunction) :
+              isRealFunction? realFunctionType(module, astContext.isListCPSFunction) :
+                              genericFunctionType(ctx, astContext.isListCPSFunction);
 
   // Create the hoisted function.
   std::cout << fn_var << " is CPS? " << astContext.isListCPSFunction << '\n';
@@ -708,10 +711,11 @@ Value* compile(IRBuilder<>& builder,
                AstContext astContext) {
   auto& module = *unit.module;
   auto& ctx = module.getContext();
-  auto recurse = [&, astContext] (lexp& e, std::optional<bool> last = std::nullopt) mutable {
+  auto recurse = [&] (lexp& e, std::optional<bool> last = std::nullopt) mutable {
+    auto ctx = astContext;
     if (last.has_value())
-      astContext.isFinalExpression = last.value();
-    return compile(builder, e, variables, unit, astContext);
+      ctx.isFinalExpression = last.value();
+    return compile(builder, e, variables, unit, ctx);
   };
   switch (expression.index()) {
     case VAR: {
@@ -765,8 +769,8 @@ Value* compile(IRBuilder<>& builder,
           bool substituted = false;
           if (!eta_reduced
            && (occurrence.enclosing_exp == &expression        // immediately enclosed by this exp,
-            ||  occurrence.enclosing_exp->index() == CON
-             && occurrence.enclosing_exp == &body_exp)) {       // or a argument of an immediately enclosed constructor
+            || (occurrence.enclosing_exp->index() == CON
+             && occurrence.enclosing_exp == &body_exp))) {       // or a argument of an immediately enclosed constructor
             *occur_first->second.holding_exp = assign_exp;
             substituted = true;
           }
@@ -921,8 +925,6 @@ Value* compile(IRBuilder<>& builder,
 
       std::vector<std::pair<std::unique_ptr<IRBuilder<>>, Value*>> results;
 
-      //auto result = builder.CreateAlloca(genericPointerType(ctx), nullptr, "switch_result_ptr");
-      //default_builder.CreateStore(ConstantPointerNull::get(genericPointerType(ctx)), result);
       if (default_case) {
         auto default_v = compile(*default_builder, default_case.value(), variables, unit, astContext);
         if (default_v) {

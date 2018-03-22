@@ -241,8 +241,8 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
   init();
 
   // Get the structured record
-  auto exportFunction = (genericFunctionTypeNative*)EE->getFunctionAddress("export");
-  auto lambda = (genericPointerTypeNative*)exportFunction((genericPointerTypeNative)imports.data(), nullptr);
+  auto exportFunction = (genericPointerTypeNative(*)(genericPointerTypeNative))EE->getFunctionAddress("export");
+  auto lambda = (genericPointerTypeNative*)exportFunction((genericPointerTypeNative)imports.data());
 
   // Invoke the function with the given index. Indexing starts at 1.
   auto last_fnc = (genericPointerTypeNative*)lambda[functionIndex+1];
