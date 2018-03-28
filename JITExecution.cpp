@@ -84,7 +84,7 @@ void performStatepointsPass(Module& mod) {
   }
 
   legacy::PassManager pm;
-  pm.add(createRewriteStatepointsForGCPass());
+  pm.add(createRewriteStatepointsForGCLegacyPass());
   pm.run(mod);
 }
 
@@ -127,12 +127,11 @@ Value* insertAllocation(LLVMContext& ctx, IRBuilder<>& builder, Function* fun, F
 
   builder.SetInsertPoint(afterCheck);
   auto retval = builder.CreateLoad(heap, "alloc_slot");
-  builder.CreateStore(builder.CreateGEP(builder.CreateLoad(heap, "heapptr"),
-                                        size_arg, "newheapptr"),
+  builder.CreateStore(builder.CreateGEP(retval, size_arg, "new_heap_ptr"),
                       heap);
-  builder.CreateStore(builder.CreateSub(builder.CreateLoad(left, "new_size_left"), size_arg, "left_after_alloc"),
+  builder.CreateStore(builder.CreateSub(builder.CreateLoad(left, "updated_size_left"), size_arg, "left_after_alloc"),
                       left);
-  return builder.CreatePointerCast(retval, fun->getReturnType());
+  return builder.CreatePointerCast(retval, fun->getReturnType(), "storage_pointer");
 }
 
 /* Constructs the allocation function, and introduces the weak symbols corresponding to the
@@ -232,10 +231,14 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
     closureLengths[(void*)EE->getPointerToFunction(fun)] = len;
 
   std::vector<genericPointerTypeNative> imports{0}; // record tag takes one spot
-  for (auto& [pid, indices] : unit.importTree) {
-    auto closure = LibraryImpl::libraryIdMap.at(pid.c_str()).at(indices);
-    imports.push_back(closure);
-  }
+  for (auto& [pid, indices] : unit.importTree)
+    try {
+      auto closure = LibraryImpl::libraryIdMap.at(pid.c_str()).at(indices);
+      imports.push_back(closure);
+    }
+    catch (std::out_of_range const&) {
+      throw CompileFailException{"Unresolved import: " + std::string{pid} + " " + std::to_string(indices[0])};
+    }
 
   //! Start measuring at the GC initialisation.
   init();
@@ -248,7 +251,7 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
   auto last_fnc = (genericPointerTypeNative*)lambda[functionIndex+1];
 
   auto start_time = std::chrono::high_resolution_clock::now();
-  genericIntTypeNative arg = 10'000;
+  genericIntTypeNative arg = 1;
   auto res = (genericIntTypeNative)((genericFunctionTypeNative*) last_fnc[0])
                ((genericPointerTypeNative)((arg << GC::valueFlagLength) + GC::intTag), last_fnc);
 
