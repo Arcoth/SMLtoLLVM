@@ -26,7 +26,7 @@ void* StackMapPtr;
 statepoint_table_t* table;
 uint8_t* currentStackPtr;
 
-const uint64_t smallHeapSize = 128'000; // 8KB
+const uint64_t smallHeapSize = 64000; // 8KB
 uint64_t smallSizeLeft = smallHeapSize;
 heapUnit *heapBase,
          *heapPtr; // points at the first free spot in the heap
@@ -46,12 +46,17 @@ struct SelfRelocatingHeap {
   uint64_t size;
   uint64_t nextSize;
 
-  SelfRelocatingHeap(Heap heap, heapUnit*& ptr, std::size_t& sizeLeft, double incFactor, std::size_t size)
-   : ptr(ptr), sizeLeft(sizeLeft), heap(heap), increaseFactor(incFactor), size(size), nextSize(size) {}
+  SelfRelocatingHeap(Heap heap,
+                     heapUnit*& ptr,
+                     std::size_t& sizeLeft,
+                     double incFactor,
+                     std::size_t size)
+   : ptr(ptr), sizeLeft(sizeLeft), heap(heap), increaseFactor(incFactor),
+     size(size), nextSize(size) {}
 
   void increaseNextSize() {
     nextSize = size * increaseFactor; // scale the heap
-    std::cout << "Resizing heap to " << nextSize << '\n';
+    std::cout << "Resizing heap " << (int) heap << " to " << nextSize << '\n';
   }
 
   void cleanup(uint8_t* stackPtr);
@@ -65,7 +70,7 @@ heapUnit *referenceHeapPtr; // first free spot in the mutator heap
 uint64_t referenceSizeLeft = 1'000;
 
 heapUnit* largeHeapPtr;
-uint64_t largeSizeLeft = 40'000'000;
+uint64_t largeSizeLeft = 1000000;
 
 SelfRelocatingHeap OldHeap {
   Heap::Old,
@@ -121,9 +126,10 @@ uint64_t getRecordLength(uint64_t tag) {
   switch (tag & 0b11) {
   case 0:
     try {
-    return closureLengths.at((void*)tag);
-    } catch(...) {
-      std::cerr << "Tag was " << std::hex << tag << '\n'; throw;
+      return closureLengths.at((void*)tag);
+    } catch(std::out_of_range const&) { // Library closures?
+      std::cerr << "\nFunction tag not found: " << std::hex << tag << std::dec << '\n';
+      throw;
     }
     break;
   case 0b01:
@@ -146,12 +152,15 @@ bool performRelocation(heapUnit** slot,
                        Queue& queue, std::size_t& queueLeft) {
   auto ptrTarget = determineSource(*slot);
 
-  if (!canPointInto(ptrTarget, cleanup_target))
+  if (!canPointInto(ptrTarget, cleanup_target)) {
+    //  std::cout << "Aborting: " << *slot << " from " << (int)ptrTarget << " cannot point to " << (int)cleanup_target << std::endl;
     return true;
+  }
 
   const auto tag = **slot;
 
   uint64_t len = isFixedContentHeap(ptrTarget)? 1: getRecordLength(tag); // This is the total number of slots of size 64 bytes occupied.
+
   if (len > queueLeft)
         return false;
 
@@ -268,22 +277,31 @@ void relocatePointer(
        end_1 = base_1, end_2 = base_2;
   *end_1++ = slot;
 
+  int i = 0;
   do {
-    for (; base_1 < end_1; base_1++)
+    ++i;
+    for (; base_1 < end_1; base_1++) {
+      // std::cout << std::string(i, ' ') << " " << *base_1 << "("<<(int)determineSource((heapUnit*)*base_1)<<") points to " << **base_1 << " in " << (int)determineSource(**base_1) << std::endl;
       if (!performRelocation(*base_1, newHeapPtr, units_left, cleanup_target, end_2, queue_2_left, args...)) {
         for (; base_1 < end_1; base_1++)
           relocatePointer(*base_1, newHeapPtr, units_left, cleanup_target, args...);
         break;
       }
+    }
+
     base_1 = end_1 = queue_1;
     queue_1_left = maximumBreadth;
+    ++i;
 
-    for (; base_2 < end_2; base_2++)
+    for (; base_2 < end_2; base_2++) {
+      // std::cout << std::string(i, ' ') << " " << *base_2 << "("<<(int)determineSource((heapUnit*)*base_2)<<") points to " << **base_2 << " in " << (int)determineSource(**base_2) << std::endl;
       if (!performRelocation(*base_2, newHeapPtr, units_left, cleanup_target, end_1, queue_1_left, args...)) {
         for (; base_2 < end_2; base_2++)
             relocatePointer(*base_2, newHeapPtr, units_left, cleanup_target, args...);
         break;
       }
+    }
+
     base_2 = end_2 = queue_2;
     queue_2_left = maximumBreadth;
   } while (base_1 < end_1);
@@ -294,21 +312,18 @@ void walkStack(uint8_t* stackPtr, F slotHandler) {
   intptr_t retAddr = *((intptr_t*)stackPtr);
   stackPtr += sizeof(void*); // step into frame
   frame_info_t* frame = lookup_return_address(table, retAddr);
-  std::vector<heapUnit*> lastPointers;
-
 
   while(frame != NULL) {
+    std::vector<heapUnit*> lastPointers;
     for(uint16_t i = 0; i < frame->numSlots; i++) {
       pointer_slot_t ptrSlot = frame->slots[i];
       heapUnit** ptr = (heapUnit**)(stackPtr + ptrSlot.offset);
-      std::ptrdiff_t diff = 0;
       if(ptrSlot.kind >= 0) {
-        diff = *ptr - lastPointers.at(ptrSlot.kind);
+        auto diff = *ptr - lastPointers.at(ptrSlot.kind);
+        assert(diff == 0 && "Derived pointers with non-zero diffs are not supposed to occur!");
       }
       lastPointers.push_back(*ptr);
-      *ptr -= diff;
       slotHandler(ptr);
-      *ptr += diff;
     }
 
     // move to next frame. seems we have to add one pointer size to
@@ -358,8 +373,10 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap) {
   currentStackPtr = stackPtr;
 #if GC_DEBUG_LOG_LVL >= 1
   static int counter;
+
   int counter_current = ++counter;
-  std::cout << "\nCleaning " << (int)heap << "; " << counter_current << "th collection.\n";
+    std::cout << "\nCleaning " << (int)heap << "; " << counter_current << "th collection.\n";
+
 #endif // GC_DEBUG_LOG_LVL
   switch(heap) {
     case Heap::Young:
@@ -389,8 +406,11 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap) {
     case Heap::Old:
       OldHeap.cleanup(stackPtr);
 
-      if (OldHeap.sizeLeft < 2 * smallHeapSize) // if less than two young heaps are left,
-        OldHeap.increaseNextSize(); // increase the next allocation.
+      if (OldHeap.sizeLeft < 2 * smallHeapSize) { // if less than two young heaps are left,
+        OldHeap.increaseNextSize();
+        if (OldHeap.sizeLeft < smallHeapSize)
+          OldHeap.cleanup(stackPtr);
+      }
     break;
 
     default:
@@ -398,7 +418,7 @@ void cleanup_heap(uint8_t* stackPtr, Heap heap) {
   }
 
 #if GC_DEBUG_LOG_LVL >= 1
-  std::cout << "Finished " << counter_current << "\n\n";
+    std::cout << "Finished " << counter_current << "\n\n";
 #endif // GC_DEBUG_LOG_LVL
 }
 
@@ -407,24 +427,14 @@ extern "C" void cleanup_small_heap(uint8_t* stackPtr) {
 
   // Overwrite the cleaned memory to recognise wrong reads.
 #ifdef GC_MEMSET
-  memset(heapBase, 0x7F, heapSize * sizeof(heapUnit));
+  memset(heapBase, 0x7F, smallHeapSize * sizeof(heapUnit));
 #endif
 }
 extern "C" void cleanup_old_heap(uint8_t* stackPtr) {
   cleanup_heap(stackPtr, Heap::Old);
-
-  // Overwrite the cleaned memory to recognise wrong reads.
-#ifdef GC_MEMSET
-  memset(heapBase, 0x7F, heapSize * sizeof(heapUnit));
-#endif
 }
 extern "C" void cleanup_mutable_heap(uint8_t* stackPtr) {
   cleanup_heap(stackPtr, Heap::Mutable);
-
-  // Overwrite the cleaned memory to recognise wrong reads.
-#ifdef GC_MEMSET
-  memset(referenceHeapBase, 0x7F, referenceHeapSize * sizeof(heapUnit));
-#endif
 }
 
 extern "C" [[gnu::naked]] void cleanupSmallHeap()   {
