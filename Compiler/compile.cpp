@@ -124,11 +124,12 @@ std::set<lvar> freeVars( lexp const& exp ) {
     case STRING: case GENOP:
       return {};
 
-    case VAR: return {get<VAR>(exp)};
+    case VAR:
+    return {get<VAR>(exp)};
 
     case FN: {
-      auto& fn = get<FN>(exp);
-      return set_subtract(freeVars(get<dlexp>(fn)), {get<lvar>(fn)});
+      auto& [var, _, body] = get<FN>(exp);
+      return set_subtract(freeVars(body), {var});
     }
     case FIX: {
       auto& [decls, in] = get<FIX>(exp);
@@ -241,7 +242,7 @@ Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type,
     throw CompileFailException{"Allocation function not found!"};
 
   auto ptr = builder.CreateCall(alloc_fun, ConstantInt::get(size_type, n * DataLayout{&module}.getTypeAllocSize(type)), "storage");
-  return builder.CreatePointerCast(ptr, type->getPointerTo(heapAddressSpace), "allocatedobj");
+  return builder.CreatePointerCast(ptr, type->getPointerTo(heapAddressSpace), "storage_ptr");
 }
 
 Value* boxIntNoCast(IRBuilder<>& builder, Value* x) {
@@ -491,12 +492,13 @@ Value* record(IRBuilder<>& builder, Rng const& values, GC::Heap heap = GC::Heap:
   assert(DataLayout{&module}.getTypeAllocSize(record_type)== std::size(record_elem_types) * 8);
 
   //! DON'T ALLOCATE memory first; first compute values, then the heap array to store them in.
+  auto storage = createAllocation(module, builder, record_type, heap);
+
   auto tag_v = ConstantInt::get(genericIntType(module), (std::size(record_elem_types) << GC::recordFlagLength) | GC::lengthTag);
   auto aggregate_v = builder.CreateInsertValue(UndefValue::get(record_type), tag_v, {0}, "record_tag");
   for (unsigned i = 0; i < std::size(values); ++i)
     aggregate_v = builder.CreateInsertValue(aggregate_v, boxedValue(builder, values[i]), {i+1}, "record_value");
 
-  auto storage = createAllocation(module, builder, record_type, heap);
   builder.CreateStore(aggregate_v, storage);
 
   return builder.CreatePointerCast(storage, genericPointerType(module.getContext()), "record_ptr");
@@ -603,7 +605,7 @@ bool isFixpointVar(lexp& fn_exp, AstContext const& astContext) {
 // To cover regular and list-CPS cases
 void yieldValue(IRBuilder<>& builder, Value* v, AstContext astContext) {
   if (astContext.isListCPSFunction) {
-    builder.CreateStore(v, builder.GetInsertBlock()->getParent()->arg_begin() + 2);
+    builder.CreateStore(v, builder.CreateConstGEP1_32(builder.GetInsertBlock()->getParent()->arg_begin() + 2, 2, "list_cps_slot"));
     builder.CreateRetVoid();
   }
   else
@@ -634,7 +636,6 @@ Value* compileFunction(IRBuilder<>* builder,
                               genericFunctionType(ctx, astContext.isListCPSFunction);
 
   // Create the hoisted function.
-  std::cout << fn_var << " is CPS? " << astContext.isListCPSFunction << '\n';
   char const* name = astContext.moduleExportExpression? "export" : nameForFunction(fn_var, astContext.isListCPSFunction);
   auto F = Function::Create(fun_type, Function::ExternalLinkage, name, &module);
 
@@ -647,6 +648,7 @@ Value* compileFunction(IRBuilder<>* builder,
 
   std::map<PLambda::lvar, Value*> inner_variables;
   // Adapt free bindings from the enclosing expression
+
   {
     unsigned index = 1; //! Start at 1; we pass the closure in without offset.
     auto env = F->arg_begin()+1; // second argument is the environment.
@@ -686,7 +688,10 @@ Value* compileFunction(IRBuilder<>* builder,
     return F;
   if (!astContext.moduleExportExpression) {
     assert(builder && "Builder must be non-zero!");
-    auto wrapper_type = StructType::create(types, F->getName().str() + "Wrapper");
+
+    auto wrapper_type = StructType::create(types);
+    auto memory = createAllocation(module, *builder, wrapper_type);
+
     auto aggregate_v = builder->CreateInsertValue(UndefValue::get(wrapper_type), F, {0}, "fun_ptr_slot"); // store function pointer...
     {
       unsigned index = 1;
@@ -697,7 +702,6 @@ Value* compileFunction(IRBuilder<>* builder,
     }
 
     // Allocate and fill the closure with captured variables.
-    auto memory = createAllocation(module, *builder, wrapper_type);
     builder->CreateStore(aggregate_v, memory);
     return builder->CreatePointerCast(memory, genericPointerType(ctx), "clos_ptr_cast");
   }
@@ -709,7 +713,7 @@ Value* compile(IRBuilder<>& builder,
                std::map<PLambda::lvar, Value*> const& variables,
                SMLTranslationUnit& unit,
                AstContext astContext) {
-  auto& module = *unit.module;
+  Module& module = *unit.module;
   auto& ctx = module.getContext();
   auto recurse = [&] (lexp& e, std::optional<bool> last = std::nullopt) mutable {
     auto ctx = astContext;
@@ -729,9 +733,17 @@ Value* compile(IRBuilder<>& builder,
       auto i = get<INT>(expression);
       return ConstantInt::getSigned(genericIntType(module), i);
     }
+    case WORD: {
+      auto i = get<WORD>(expression);
+      return ConstantInt::get(genericIntType(module), i);
+    }
     case REAL: {
       auto i = get<REAL>(expression);
       return ConstantFP::get(Type::getDoubleTy(ctx), i);
+    }
+    case STRING: {
+      auto& s = get<STRING>(expression);
+      return builder.CreatePointerCast(builder.CreateGlobalString(s, "string"), genericPointerType(ctx), "string_to_ptr");
     }
     case FN: {
       astContext.isListCPSFunction = false; // We can do this here, as the CPS code below calls compileFunction directly
@@ -745,6 +757,9 @@ Value* compile(IRBuilder<>& builder,
       {
         auto freeOccursInLet = freeVarOccurrences(body_exp, &expression);
         auto [occur_first, occur_last] = freeOccursInLet.equal_range(let_var);
+        if (std::distance(occur_first, occur_last) == 0 && get_if<FN>(&assign_exp)) {
+          return recurse(body_exp);
+        }
         if (std::distance(occur_first, occur_last) == 1) {
           auto [var, occurrence] = *occur_first;
 
@@ -752,12 +767,11 @@ Value* compile(IRBuilder<>& builder,
             Perform eta-reduction.
             If a function is only called once, substitute the function body as a let-expression.
           */
-          bool eta_reduced = false;
+          bool reduced = false;
           if (auto function_exp = get_if<FN>(&assign_exp)) {
             auto app_exp = get_if<APP>(occurrence.enclosing_exp);
             if (app_exp && &app_exp->first.get() == occurrence.holding_exp) {
-              eta_reduced = true;
-              std::cout << "Found a single application of v" << var << '\n';
+              reduced = true;
               // Replace the application with a LET fnparam = argument IN fnbody END
               auto argument = get<1>(*app_exp).get();
               occurrence.enclosing_exp->emplace<LET>(get<0>(*function_exp),
@@ -766,17 +780,16 @@ Value* compile(IRBuilder<>& builder,
             }
           }
 
-          bool substituted = false;
-          if (!eta_reduced
+          if (!reduced
            && (occurrence.enclosing_exp == &expression        // immediately enclosed by this exp,
             || (occurrence.enclosing_exp->index() == CON
              && occurrence.enclosing_exp == &body_exp))) {       // or a argument of an immediately enclosed constructor
             *occur_first->second.holding_exp = assign_exp;
-            substituted = true;
+            reduced = true;
           }
 
           // If either of the reductions has been performed:
-          if (eta_reduced || substituted) {
+          if (reduced) {
             expression = lexp{body_exp};
             return recurse(expression);    // just return the body.
           }
@@ -806,7 +819,6 @@ Value* compile(IRBuilder<>& builder,
           lexp result = body_exp;
           int elem_index = 0;
           for (auto& rcd_elem : *record_exp) {
-            std::cout << "Emplaced " << createNewVarIndex(let_var, elem_index) << '\n';
             result.emplace<LET>(createNewVarIndex(let_var, elem_index++),
                            rcd_elem,
                            lexp{result});
@@ -902,7 +914,7 @@ Value* compile(IRBuilder<>& builder,
             auto pos = std::distance(freevars.begin(), iter);
             builder.CreateStore(closure_prs[decl_index],
                                 builder.CreateConstGEP1_32(
-                                  builder.CreatePointerCast(clos, genericPointerType(ctx)->getPointerTo(heapAddressSpace)),
+                                  builder.CreatePointerCast(clos, closurePointerType(ctx)),
                                   pos+1, "closure_update_elem_ptr"));
           }
         }
@@ -1001,13 +1013,14 @@ Value* compile(IRBuilder<>& builder,
       auto& symbol = get<Symbol::symbol>(constr);
       auto symrep = unit.symbolRepresentation.at(symbol);
 
-      Function* const parentFunction = builder.GetInsertBlock()->getParent();
-      //! Optimisation for recursive list construction
-      if (astContext.isFinalExpression && get<string>(symbol) == "::") {
-        outs() << "Cons in " << parentFunction->getName() << '\n';
+      [[maybe_unused]]Function* const parentFunction = builder.GetInsertBlock()->getParent();
+      //! Optimisation for recursive list construction.
+#ifdef ENABLE_CONS_CPS_OPT
+      if (astContext.isFinalExpression
+       && get<string>(symbol) == "::"      // For list conses.
+       && tycs.front().index() == TC_PRIM) // Need the new head to be primitive, as otherwise we violate GC invariant.
         if (auto rec = std::get_if<RECORD>(&argument)) {
           auto recursive_app = get_if<APP>(&rec->at(1));
-          outs() << "rec " << recursive_app << "\n";
           if (recursive_app && isFixpointVar(get<0>(*recursive_app), astContext))
           {
             outs() << "Making " << get<lvar>(get<FN>(*astContext.enclosingFunctionExpr)) << " CPS\n";
@@ -1028,8 +1041,10 @@ Value* compile(IRBuilder<>& builder,
               recursion_function = parentFunction;
 
             auto&  [fn_exp, arg_exp] = *recursive_app;
-            auto arg_val = recurse(arg_exp, false); // the argument to the call
+
             auto cons_val = recurse(rec->at(0), false);
+            auto arg_val = recurse(arg_exp, false); // the argument to the call
+
             auto result_record = record(builder, {cons_val, ConstantPointerNull::get(genericPointerType(ctx))}, GC::Heap::Old);
 
             // store the currently half-constructed cons node in the parameter
@@ -1047,7 +1062,7 @@ Value* compile(IRBuilder<>& builder,
             return nullptr;
           }
         }
-      }
+#endif
 
       switch (symrep.type) {
         case symbol_rep::CONSTANT:
