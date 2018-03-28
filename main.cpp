@@ -141,7 +141,6 @@ int main(int argc, char** argv) try
 
   SMLCompiler::performStatepointsPass(*module);
 
-  std::cout << "Declarations: " << unit.paramFuncs << '\n';
   std::cout << "Exporting " << unit.exportedDecls << '\n';
 
   if (verifyModule(*module, &errs())) {
