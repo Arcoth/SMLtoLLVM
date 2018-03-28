@@ -2,6 +2,8 @@
 
 #include "ParserUtilities.hpp"
 
+#include <boost/algorithm/string.hpp>
+
 namespace SMLNJInterface::PLambda {
 
 using namespace Parser;
@@ -56,8 +58,14 @@ void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
     if (c == '(') {
       auto s = parse_alnum_id(is);
       is >> char_<')'>;
-           if (s == "W") parse_into<WORD>(exp, is, word{});
-      else if (s == "W32") parse_into<WORD32>(exp, is, word32{});
+      if (s == "W") {
+        parse_into<WORD>(exp, is >> std::hex, word{});
+        is >> std::dec;
+      }
+      else if (s == "W32") {
+        parse_into<WORD32>(exp, is >> std::hex, word32{});
+        is >> std::dec;
+      }
       else if (s == "I32") parse_into<INT32>(exp, is, std::int32_t{});
       else if (s == "APP") // followed by a LET expression
         is >> exp;
@@ -66,6 +74,7 @@ void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
       is.putback(c);
       string s;
       is >> std::quoted(s);
+      boost::replace_all(s, "\\n", "\n");
       exp.emplace<STRING>(s);
     }
     else {
@@ -148,6 +157,8 @@ void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
     auto tup = parse(is, '(', lty{}, ',', lexp{}, ')');
     exp.emplace<RAISE>(std::get<1>(tup), std::get<0>(tup));
   }
+  else if (s == "HANDLE")
+    parse_into<HANDLE>(exp, is, lexp{}, "WITH", lexp{});
   else if (s == "CON") {
     is >> char_<'('>;
     auto dc = parse_dataconstr(is);
