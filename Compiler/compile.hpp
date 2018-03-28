@@ -14,6 +14,9 @@
 #include <boost/container/string.hpp>
 #include <boost/container/vector.hpp>
 
+// Enable the CPS optimisation for recursive cons's.
+// #define ENABLE_CONS_CPS_OPT
+
 namespace SMLCompiler {
 
 using namespace SMLNJInterface;
