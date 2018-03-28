@@ -5,8 +5,4 @@ fun iota 0 = [0]
 
 fun main() = let 
   val n = 10000000
-  val timer = Timer.startRealTimer()
-  val x = nth(iota n, n-2)
- in print (LargeInt.toString(Time.toMilliseconds(Timer.checkRealTimer(timer)))) end
-
-val a = main()
+ in nth(iota n, n-2) end

@@ -1,13 +1,9 @@
 (* generation: *)
-fun makeList n (s : real) = let
-  fun aux (0, _, l) = l
-    | aux (m, t, l) = aux(m-1, t+1.0, (t*t) :: l)
-in aux(n, s, nil) end
+fun makeList 0 s = nil
+  | makeList n s = (s*s) :: (makeList (n-1) (s+1.0))
 
-fun makeListOf n s f = let
-  fun aux (0, _, l) = l
-    | aux (m, t, l) = aux(m-1, t+1.0, (f t) :: l)
-in aux(n, s, nil) end
+fun makeListOf 0 s f = nil
+  | makeListOf n s f = (f s) :: (makeListOf (n-1) (s + 1.0) f)
 
 fun matrix n s = makeListOf n s (makeList n)
 
@@ -48,10 +44,9 @@ fun hash_list (x::xs) = x + 0.9 * hash_list xs
 fun hash_matrix (x::xs) = hash_list x + 0.8 * hash_matrix xs
   | hash_matrix nil = 0.0
 
+val _ = use "SMLtoLLVM/Benchmarks/BenchAux.sml"
+
 fun main() = let 
-  val timer = Timer.startRealTimer()
   val a = matrix 500 0.0
   val b = matrix 500 0.0
-  val ab = hash_matrix (matrix_product a b)
-  val time = Time.toMilliseconds(Timer.checkRealTimer(timer))
-in ab end
+in benchmark (fn() => matrix_product a b) 10 end
