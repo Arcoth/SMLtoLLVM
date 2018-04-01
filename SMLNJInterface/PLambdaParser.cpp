@@ -70,11 +70,20 @@ void parse_lexp(std::istream& is, std::string_view s, lexp& exp) {
       else if (s == "APP") // followed by a LET expression
         is >> exp;
     }
+    // STRING:
     else if (c == '"') {
-      is.putback(c);
       string s;
-      is >> std::quoted(s);
+      for (char c; is.get(c);)
+        if (c == '"')
+          if (s.back() == '\\')
+            s.back() = '"';
+          else
+            break;
+        else
+          s += c;
+
       boost::replace_all(s, "\\n", "\n");
+      boost::replace_all(s, "\\t", "\t");
       exp.emplace<STRING>(s);
     }
     else {
