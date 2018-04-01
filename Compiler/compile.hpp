@@ -14,9 +14,6 @@
 #include <boost/container/string.hpp>
 #include <boost/container/vector.hpp>
 
-// Enable the CPS optimisation for recursive cons's.
-// #define ENABLE_CONS_CPS_OPT
-
 namespace SMLCompiler {
 
 using namespace SMLNJInterface;
@@ -38,17 +35,11 @@ inline char const* const smallAllocFun   = "allocateSmall",
                  * const largeAllocFun     = "allocateLarge",
                  * const mutableAllocFun = "allocateMutable";
 
-inline auto genericPointerType(LLVMContext& c) {
-  return Type::getInt8Ty(c)->getPointerTo(heapAddressSpace);
-}
+inline const auto genericPointerType = Type::getInt8Ty(context)->getPointerTo(heapAddressSpace),
+                  genericPtrToPtr = genericPointerType->getPointerTo(heapAddressSpace),
+                  closurePointerType = genericPtrToPtr;
 
-inline auto genericPtrToPtr(LLVMContext& c) {
-  return genericPointerType(c)->getPointerTo(heapAddressSpace);
-}
-
-inline auto closurePointerType(LLVMContext& c) {
-  return genericPtrToPtr(c);
-}
+inline const auto realType = Type::getDoubleTy(context);
 
 inline auto genericIntType(Module& m) {
   return m.getDataLayout().getIntPtrType(m.getContext());
@@ -61,16 +52,15 @@ inline auto tagType(Module& m) {
 
 // The type of a function that takes an integer.
 inline auto intFunctionType(Module& m, bool isCPS = false) {
-  auto& ctx = m.getContext();
   if (isCPS)
-    return FunctionType::get(Type::getVoidTy(ctx),
+    return FunctionType::get(Type::getVoidTy(context),
                              {genericIntType(m),        // the argument
-                              closurePointerType(ctx),  // the environment.
-                              genericPointerType(ctx)->getPointerTo(heapAddressSpace)}, // the CPS pointer.
+                              closurePointerType,  // the environment.
+                              genericPtrToPtr}, // the CPS pointer.
                              false); // not variadic
-  return FunctionType::get(genericPointerType(ctx),   // the return value
+  return FunctionType::get(genericPointerType,   // the return value
                            {genericIntType(m),        // the argument
-                            closurePointerType(ctx)}, // the environment.
+                            closurePointerType}, // the environment.
                            false);                    // not variadic
 }
 
@@ -80,17 +70,21 @@ inline auto realFunctionType(Module& m, bool isCPS = false) {
 }
 
 // The default function type of any function in the PLC.
-inline auto genericFunctionType(LLVMContext& ctx, bool isCPS = false) {
+inline auto genericFunctionType(bool isCPS = false) {
   if (isCPS)
-    return FunctionType::get(Type::getVoidTy(ctx),
-                             {genericPointerType(ctx),  // the argument
-                              closurePointerType(ctx),  // the environment.
-                              genericPointerType(ctx)->getPointerTo(heapAddressSpace)}, // the CPS pointer.
+    return FunctionType::get(Type::getVoidTy(context),
+                             {genericPointerType,  // the argument
+                              closurePointerType,  // the environment.
+                              genericPtrToPtr}, // the CPS pointer.
                              false); // not variadic
-  return FunctionType::get(genericPointerType(ctx),   // the return value
-                           {genericPointerType(ctx),  // the argument
-                            closurePointerType(ctx)}, // the environment.
+  return FunctionType::get(genericPointerType,   // the return value
+                           {genericPointerType,  // the argument
+                            closurePointerType}, // the environment.
                            false); // not variadic
+}
+
+inline auto allocationSizeOf(Module* module, Type* type) {
+  return DataLayout{module}.getTypeAllocSize(type);
 }
 
 struct symbol_rep {
@@ -123,6 +117,23 @@ public:
   std::map<PLambda::lvar, std::string> paramFuncs,
   // Includes both the lambda variable and the name of the entity it denotes.
                                        exportedDecls;
+};
+
+inline char const* nameForFunction(PLambda::lvar v, bool cps = false) {
+  auto n = new char[16] {};
+  std::sprintf(n, cps? "cps_lambda.v%d" : "lambda.v%d", v);
+  return n;
+}
+
+struct AstContext {
+  PLambda::lvar fixPointVariable;
+  bool isBodyOfFixpoint;       // immediate of a fixpoint function (above is the corresponding var.)
+  bool isFinalExpression;      // expression whose value is immediately yielded by a function
+  bool isCtorArgument;         // Argument to a construtor
+  bool moduleExportExpression; // The top-most lambda expression
+  bool isListCPSFunction;      // True if this function stores the resulting list in parameter %3
+  PLambda::lexp* enclosingFunctionExpr; // If isListCPSFunction, this stores the expression for creating the second function definition
+  std::unordered_map<PLambda::lvar, Function*> assignedLambas; // if a variable is assigned a lambda, this yields the function
 };
 
 // The top-most compile function. It is passed the output of printing a lexp term in SML/NJ.

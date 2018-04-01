@@ -1,22 +1,38 @@
 #pragma once
 
+#include "GCPlugin/GCBasicConstants.hpp"
+
 #include <exception>
 #include <ostream>
 #include <set>
 #include <string>
 
+#include <llvm/IR/LLVMContext.h>
+
 namespace SMLCompiler{
+
+inline thread_local llvm::LLVMContext context; // the global LLVM context for the compiler
 
 using genericPointerTypeNative = char*;
 using genericIntTypeNative = std::intptr_t;
+using tagTypeNative = std::int32_t;
+
+static_assert(sizeof(void*) == sizeof(std::int64_t), "This project currently requires 64-bit words.");
+
+static_assert(2 * sizeof(tagTypeNative) == sizeof(genericIntTypeNative)); // sanity
+
 using genericFunctionTypeNative =
   genericPointerTypeNative(genericPointerTypeNative, genericPointerTypeNative[]);
 
 inline genericPointerTypeNative boxNative(genericIntTypeNative i) {
-  return (genericPointerTypeNative)((i << 1) | 1);
+  return (genericPointerTypeNative)((i << GC::valueFlagLength) | GC::intTag);
 }
 inline genericIntTypeNative unboxNative(genericPointerTypeNative i) {
-  return ((genericIntTypeNative)i) >> 1;
+  return ((genericIntTypeNative)i) >> GC::valueFlagLength;
+}
+
+inline auto boxNativeTag(tagTypeNative t) {
+  return (t << GC::recordFlagLength) | GC::lengthTag;
 }
 
 class CompileFailException : public std::runtime_error {
