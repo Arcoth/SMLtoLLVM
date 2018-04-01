@@ -60,18 +60,18 @@ void performOptimisationPasses(Module& mod) {
 }
 
 void performStatepointsPass(Module& mod) {
-  auto& ctx = mod.getContext();
+  auto& context = mod.getContext();
 
   legacy::FunctionPassManager fpm(&mod);
 
   // Add a preliminary safepoint poller
   auto safepoint_poll =
-    Function::Create(FunctionType::get(Type::getVoidTy(ctx), false),
+    Function::Create(FunctionType::get(Type::getVoidTy(context), false),
                      GlobalValue::ExternalLinkage,
                      "gc.safepoint_poll",
                      &mod);
 
-  IRBuilder<> safepoint_builder(BasicBlock::Create(ctx, "entry", safepoint_poll));
+  IRBuilder<> safepoint_builder(BasicBlock::Create(context, "entry", safepoint_poll));
   safepoint_builder.CreateRetVoid();
 
   fpm.add(createPlaceSafepointsPass());
@@ -108,10 +108,10 @@ public:
   }
 };
 
-Value* insertAllocation(LLVMContext& ctx, IRBuilder<>& builder, Function* fun, Function* collect_fun,
+Value* insertAllocation(IRBuilder<>& builder, Function* fun, Function* collect_fun,
                         Value* heap, Value* left) {
-  auto gcCleanup  = BasicBlock::Create(ctx, "gcCleanup" , fun),
-       afterCheck = BasicBlock::Create(ctx, "afterCheck", fun);
+  auto gcCleanup  = BasicBlock::Create(context, "gcCleanup" , fun),
+       afterCheck = BasicBlock::Create(context, "afterCheck", fun);
 
   // Round the size argument up: we allocate in 8 byte chunks.
   auto size_arg = builder.CreateUDiv(builder.CreateAdd(fun->arg_begin(),
@@ -137,7 +137,6 @@ Value* insertAllocation(LLVMContext& ctx, IRBuilder<>& builder, Function* fun, F
 /* Constructs the allocation function, and introduces the weak symbols corresponding to the
    heap base and size scalars linked in by the runtime. */
 void addGCSymbols(Module& mod) {
-  auto& ctx = mod.getContext();
   auto global = [&] (auto type, auto name) {
     return new GlobalVariable(mod, type,
                      false, // constant?
@@ -150,7 +149,7 @@ void addGCSymbols(Module& mod) {
                      true);
   };
 
-  auto heap_unit = Type::getInt64Ty(ctx);
+  auto heap_unit = Type::getInt64Ty(context);
   auto ptr_type = heap_unit->getPointerTo(heapAddressSpace);
 
   auto heap = global(ptr_type, "heapPtr");
@@ -163,34 +162,34 @@ void addGCSymbols(Module& mod) {
   auto large_left = global(heap_unit, "largeSizeLeft");
 
 
-  auto collect_small = Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
+  auto collect_small = Function::Create(FunctionType::get(Type::getVoidTy(context), false), GlobalVariable::ExternalLinkage,
                    invokeSmallHeapCollection, &mod);
-  auto collect_large = Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
+  auto collect_large = Function::Create(FunctionType::get(Type::getVoidTy(context), false), GlobalVariable::ExternalLinkage,
                    invokeLargeHeapCollection, &mod);
-  auto collect_mut = Function::Create(FunctionType::get(Type::getVoidTy(ctx), false), GlobalVariable::ExternalLinkage,
+  auto collect_mut = Function::Create(FunctionType::get(Type::getVoidTy(context), false), GlobalVariable::ExternalLinkage,
                    invokeMutableHeapCollection, &mod);
 
-  auto type = FunctionType::get(genericPointerType(ctx),
-                                {Type::getInt64Ty(ctx)}, false);
+  auto type = FunctionType::get(genericPointerType,
+                                {Type::getInt64Ty(context)}, false);
 
-  auto small_fun = Function::Create(type, GlobalVariable::InternalLinkage,
+  auto small_fun = Function::Create(type, GlobalVariable::ExternalLinkage,
                                    smallAllocFun, &mod),
-       large_fun = Function::Create(type, GlobalVariable::InternalLinkage,
+       large_fun = Function::Create(type, GlobalVariable::ExternalLinkage,
                                    largeAllocFun, &mod),
-       mutable_fun = Function::Create(type, GlobalVariable::InternalLinkage,
+       mutable_fun = Function::Create(type, GlobalVariable::ExternalLinkage,
                                    mutableAllocFun, &mod);
 
   {
-    IRBuilder<> builder(BasicBlock::Create(ctx, "entry", small_fun));
-    builder.CreateRet(insertAllocation(ctx, builder, small_fun, collect_small, heap, left));
+    IRBuilder<> builder(BasicBlock::Create(context, "entry", small_fun));
+    builder.CreateRet(insertAllocation(builder, small_fun, collect_small, heap, left));
   }
   {
-    IRBuilder<> builder(BasicBlock::Create(ctx, "entry", large_fun));
-    builder.CreateRet(insertAllocation(ctx, builder, large_fun, collect_large, large_heap, large_left));
+    IRBuilder<> builder(BasicBlock::Create(context, "entry", large_fun));
+    builder.CreateRet(insertAllocation(builder, large_fun, collect_large, large_heap, large_left));
   }
   {
-    IRBuilder<> builder(BasicBlock::Create(ctx, "entry", mutable_fun));
-    builder.CreateRet(insertAllocation(ctx, builder, mutable_fun, collect_mut, mut_heap, mut_left));
+    IRBuilder<> builder(BasicBlock::Create(context, "entry", mutable_fun));
+    builder.CreateRet(insertAllocation(builder, mutable_fun, collect_mut, mut_heap, mut_left));
   }
 }
 
@@ -224,8 +223,11 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
 
   EE->generateCodeForModule(module);
 
-  assert(memManager->stackMap());
-  StackMapPtr = memManager->stackMap();
+  using alloc_t = void* (*)(std::uint64_t);
+  assert(LibraryImpl::allocate_small_ptr = (alloc_t)EE->getFunctionAddress("allocateSmall"));
+  assert(LibraryImpl::allocate_large_ptr = (alloc_t)EE->getFunctionAddress("allocateLarge"));
+
+  assert(StackMapPtr = memManager->stackMap());
 
   for (auto [fun, len] : unit.closureLength)
     closureLengths[(void*)EE->getPointerToFunction(fun)] = len;
