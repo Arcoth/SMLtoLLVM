@@ -6,6 +6,8 @@ namespace SMLCompiler {
   void performOptimisationPasses(llvm::Module&);
   void performStatepointsPass(llvm::Module&);
 
+  void writeToFile(Module const& m, char const* name);
+
   inline char const* const invokeSmallHeapCollection = "cleanupSmallHeap";
   inline char const* const invokeLargeHeapCollection = "cleanupLargeHeap";
   inline char const* const invokeMutableHeapCollection = "cleanupMutableHeap";

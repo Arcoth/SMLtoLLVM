@@ -2,6 +2,7 @@
 #include "GCPlugin/GCBasicConstants.hpp"
 #include "GCPlugin/GC.h"
 #include "JITExecution.hpp"
+#include "RewriteStatepointsForGC_Modified.h"
 
 #include "SMLLibrary.hpp"
 
@@ -31,6 +32,14 @@ namespace SMLCompiler {
 
 using namespace llvm;
 
+void writeToFile(Module const& m, char const* name) {
+  std::error_code ec;
+  raw_fd_ostream stream(name, ec, sys::fs::OpenFlags::F_None);
+  // Print out all of the generated code.
+  outs() << "\n\tPrinting LLVM Module to file...\n";
+  m.print(stream, nullptr);
+}
+
 void performOptimisationPasses(Module& mod) {
 
   legacy::PassManager pm;
@@ -42,15 +51,17 @@ void performOptimisationPasses(Module& mod) {
   legacy::FunctionPassManager fpm(&mod);
 
   // Do simple "peephole" optimizations and bit-twiddling optzns.
-  fpm.add(createInstructionCombiningPass());
+  fpm.add(createInstructionCombiningPass ());
+  //! Eliminate tail calls!
+  fpm.add(createTailCallEliminationPass());
+  // Simplify the control flow graph (deleting unreachable blocks, etc).
+  fpm.add(createCFGSimplificationPass());
+  fpm.add(createLICMPass());
+  fpm.add(createLoopLoadEliminationPass());
   // Reassociate expressions.
   fpm.add(createReassociatePass());
   // Eliminate Common SubExpressions.
   fpm.add(createGVNPass());
-  // Simplify the control flow graph (deleting unreachable blocks, etc).
-  fpm.add(createCFGSimplificationPass());
-  fpm.add(createPromoteMemoryToRegisterPass());
-  fpm.add(createTailCallEliminationPass());
 
   fpm.doInitialization();
 
@@ -84,7 +95,7 @@ void performStatepointsPass(Module& mod) {
   }
 
   legacy::PassManager pm;
-  pm.add(createRewriteStatepointsForGCLegacyPass());
+  pm.add(createRewriteStatepointsForGCNoDerivedPtrsLegacyPass());
   pm.run(mod);
 }
 
@@ -239,7 +250,8 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
       imports.push_back(closure);
     }
     catch (std::out_of_range const&) {
-      throw CompileFailException{"Unresolved import: " + std::string{pid} + " " + std::to_string(indices[0])};
+      std::cerr << "Unresolved import: " << pid << " : " << indices << '\n';
+      throw std::runtime_error{""};
     }
 
   //! Start measuring at the GC initialisation.
