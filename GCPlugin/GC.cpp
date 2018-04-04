@@ -170,9 +170,10 @@ bool performRelocation(heapUnit** slot,
       return true;
     }
 
+
     assert(len <= units_left); // we can fit this into the target heap?
     std::copy_n(*slot, len, newHeapPtr); // perform the relocation
-    **slot = (heapUnit)newHeapPtr | 0b11; // assign the old spot a relocation forward reference to the target
+    **slot = (heapUnit)newHeapPtr | relocatedPointerTag; // assign the old spot a relocation forward reference to the target
     *slot = newHeapPtr; // replace old pointer value
     newHeapPtr += len; // bump heap pointer
     units_left -= len;
