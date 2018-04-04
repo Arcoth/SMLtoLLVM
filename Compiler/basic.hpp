@@ -9,6 +9,9 @@
 
 #include <llvm/IR/LLVMContext.h>
 
+#define LIKELY(x)       __builtin_expect((x),1)
+#define UNLIKELY(x)     __builtin_expect((x),0)
+
 namespace SMLCompiler{
 
 inline thread_local llvm::LLVMContext context; // the global LLVM context for the compiler
