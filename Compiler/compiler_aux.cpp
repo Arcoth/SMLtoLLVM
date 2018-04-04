@@ -73,7 +73,9 @@ Type* boxedType(Module& m, Type* t) {
   return t->isDoubleTy()? genericIntType(m) : t;
 }
 Value* unboxedValue(IRBuilder<>& builder, Value* x) {
-  return builder.CreateAShr(x, GC::valueFlagLength, "unboxed_int");
+  if (x->getType()->isIntegerTy())
+    return builder.CreateAShr(x, GC::valueFlagLength, "unboxed_int");
+  throw CompileFailException{"Unexpected unboxedValue call on non-int"};
 }
 Value* boxedValue(IRBuilder<>& builder, Value* value) {
   if (value->getType()->isIntegerTy())
@@ -396,6 +398,14 @@ bool isReal(lty l) {
   }
   return false;
 }
+bool isPrimitiveAggrType(tyc const& t) {
+  if (t.index() == TC_PRIM)
+    return true;
+  else if (auto tup = std::get_if<TC_TUPLE>(&t))
+    return std::all_of(tup->begin(), tup->end(), isPrimitiveAggrType);
+  return false;
+}
+
 
 Value* compileFunction(IRBuilder<>* builder,
                        lexp& expression,
@@ -423,8 +433,6 @@ Value* compileFunction(IRBuilder<>* builder,
   // Create the hoisted function.
   char const* name = astContext.moduleExportExpression? "export" : nameForFunction(fn_var, astContext.isListCPSFunction);
   auto F = Function::Create(fun_type, Function::ExternalLinkage, name, &module);
-
-  unit.closureLength.emplace_back(F, free_vars.size()+1);
 
   unit.paramFuncs[fn_var] = F->getName();
 
@@ -466,8 +474,30 @@ Value* compileFunction(IRBuilder<>* builder,
   AstContext newAstCtx = astContext;
   newAstCtx.enclosingFunctionExpr = &expression;
   newAstCtx.moduleExportExpression = false;
-  if (auto retv = compile(fun_builder, fn_body, inner_variables, unit, newAstCtx))
+  if (auto retv = compile(fun_builder, fn_body, inner_variables, unit, newAstCtx)) {
+    // Adjust the return type to avoid the address space casts on inlining
+//    if (!retv->getType()->isPointerTy()) {
+//      F->removeFromParent(); // Remove first.
+//      fun_type = FunctionType::get(genericIntType(module), fun_type->params(), false);
+//      types[0] = fun_type->getPointerTo();
+//      auto NF = Function::Create(FunctionType::get(genericIntType(module), fun_type->params(), false),
+//                                 Function::ExternalLinkage, name, &module);
+//
+//      // Copy the function (from http://llvm.org/doxygen/ArgumentPromotion_8cpp_source.html line 365)
+//      NF->getBasicBlockList().splice(NF->begin(), F->getBasicBlockList());
+//      for (auto I = F->arg_begin(), I2 = NF->arg_begin();
+//          I != F->arg_end(); ++I, ++I2) {
+//         I->replaceAllUsesWith(&*I2);
+//         I2->takeName(&*I);
+//      }
+//      F = NF;
+//      F->addFnAttr("yieldsReal");
+//    }
+
     yieldValue(fun_builder, retv, astContext);
+  }
+
+  unit.closureLength.emplace_back(F, free_vars.size()+1); // Add the closure length after pot replacing F
 
   if (astContext.isListCPSFunction)
     return F;

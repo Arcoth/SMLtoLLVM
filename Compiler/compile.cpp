@@ -94,7 +94,7 @@ Value* compile_primop(IRBuilder<>& builder,
     if (!v->getType()->isIntegerTy()
      && !v->getType()->isDoubleTy()) {
       auto v_ptr = builder.CreatePointerCast(v, genericPtrToPtr, "primop_rcd_ptr");
-      for (int i = 0; i < 3; ++i)
+      for (int i = 0; i < 2; ++i)
         arg_values.push_back([i, v_ptr, &builder] {return builder.CreateLoad(builder.CreateConstGEP1_32(v_ptr, i+1), "primop_rcd_elem");});
     }
   }
@@ -124,6 +124,10 @@ Value* compile_primop(IRBuilder<>& builder,
           assert_arity(arg_values, 2); assert(isFloat); \
           result = builder.Create##fun(arg_values[0](), arg_values[1](), "float_" #fun); \
           break;
+        #define PRIMOP_BIN_I(fun) \
+          assert_arity(arg_values, 2); assert(!isFloat); \
+          result = builder.Create##fun(arg_values[0](), arg_values[1](), "int_" #fun); \
+          break;
         #define PRIMOP_BIN(fun) \
           assert_arity(arg_values, 2); \
           result = isFloat? builder.CreateF##fun(arg_values[0](), arg_values[1](), "float_" #fun) \
@@ -132,6 +136,7 @@ Value* compile_primop(IRBuilder<>& builder,
         case MUL: PRIMOP_BIN(Mul)
         case ADD: PRIMOP_BIN(Add)
         case SUB: PRIMOP_BIN(Sub)
+        case DIV: PRIMOP_BIN_I(SDiv)
         case NEG:
           result = isFloat? builder.CreateFNeg(arg_value(), "float_Neg")
                           : builder.CreateNeg(arg_value(), "int_Neg");
@@ -208,7 +213,7 @@ Value* compile_primop(IRBuilder<>& builder,
     }
     case Primop::REAL: {
       unbox_args(false);
-      return builder.CreateBitCast(arg_value(), Type::getDoubleTy(module.getContext()), "int_to_double");
+      return builder.CreateSIToFP(arg_value(), Type::getDoubleTy(module.getContext()), "int_to_double");
     }
     default:
       throw UnsupportedException{"primop " + std::to_string(op.index())};
@@ -231,7 +236,8 @@ Value* record(IRBuilder<>& builder, Rng const& values, GC::Heap heap = GC::Heap:
   //! DON'T ALLOCATE memory first; first compute values, then the heap array to store them in.
   auto storage = createAllocation(module, builder, record_type, heap);
 
-  auto tag_v = ConstantInt::get(genericIntType(module), (std::size(record_elem_types) << GC::recordFlagLength) | GC::lengthTag);
+  auto tag_v = ConstantInt::get(genericIntType(module), (std::size(record_elem_types) << GC::recordFlagLength) | GC::lengthTag
+                                                      | ((uint64_t)0xBEEF << 32));
   auto aggregate_v = builder.CreateInsertValue(UndefValue::get(record_type), tag_v, {0}, "record_tag");
   for (unsigned i = 0; i < std::size(values); ++i)
     aggregate_v = builder.CreateInsertValue(aggregate_v, boxedValue(builder, values[i]), {i+1}, "record_value");
@@ -252,7 +258,6 @@ Value* getTagPtrFromRecordPtr(IRBuilder<>& builder, Value* rcd) {
                                     "tag_ptr");
 }
 
-
 void insertAbort(IRBuilder<>& builder) {
   auto& module = *builder.GetInsertBlock()->getModule();
   builder.CreateCall(module.getOrInsertFunction("abort",
@@ -260,8 +265,6 @@ void insertAbort(IRBuilder<>& builder) {
                      {});
   builder.CreateUnreachable();
 }
-
-
 
 bool isFixpointVar(lexp& fn_exp, AstContext const& astContext) {
   return fn_exp.index() == VAR
@@ -279,6 +282,16 @@ Value* compileFunction(IRBuilder<>* builder,
 
 
 using namespace Lty;
+
+bool isPrim(tyc const& t) {
+  return t.index() == TC_PRIM;
+}
+// 0 if not, length > 1 if true
+std::size_t isPrimAggr(tyc const& t) {
+  if (auto tup = std::get_if<TC_TUPLE>(&t))
+    return std::all_of(tup->begin(), tup->end(), isPrim)? tup->size() : 0;
+  return 0;
+}
 
 Value* compile(IRBuilder<>& builder,
                lexp& expression,
@@ -381,7 +394,6 @@ Value* compile(IRBuilder<>& builder,
       if (auto record_exp = get_if<RECORD>(&assign_exp)) {
         auto freeOccursInLet = freeVarOccurrences(body_exp, &expression);
         auto [occur_first, occur_last] = freeOccursInLet.equal_range(let_var);
-        outs() << "Eliding record for " << let_var << '\n';
         bool onlySelects = std::all_of(occur_first, occur_last, [] (auto& o) {
           return o.second.enclosing_exp->index() == SELECT;
         });
@@ -468,9 +480,15 @@ Value* compile(IRBuilder<>& builder,
 
       Value* fn = nullptr;
       if (auto lvar_ptr = get_if<VAR>(&fn_exp); lvar_ptr && astContext.assignedLambas.count(*lvar_ptr)) {
-        fn = builder.CreatePointerCast(astContext.assignedLambas[*lvar_ptr], fun_type->getPointerTo(), "fun_ptr");
-        if (arg_exp.get().index() == RECORD)
-          std::cout << "Record call: " << *lvar_ptr << std::endl;
+        fn = astContext.assignedLambas[*lvar_ptr];
+        outs() << "Inserting function name " << fn->getName() << '\n';
+
+        Value* val = builder.CreateCall(fn, {arg_val, closure_ptr});
+//        if (val->getType()->isIntegerTy()
+//         && !cast<Function>(fn)->hasFnAttribute("yieldsReal"))
+//          val = unboxedValue(builder, val);
+
+        return val;
       }
       else
         fn = builder.CreateLoad(builder.CreatePointerCast(closure_ptr, fun_type->getPointerTo()->getPointerTo(heapAddressSpace), "fun_ptr_ptr"), "fun_ptr");
@@ -606,19 +624,19 @@ Value* compile(IRBuilder<>& builder,
       auto& symbol = get<Symbol::symbol>(constr);
       auto symrep = unit.symbolRepresentation.at(symbol);
 
-      [[maybe_unused]] Function* const parentFunction = builder.GetInsertBlock()->getParent();
       //! Optimisation for recursive list construction.
 #ifdef ENABLE_CONS_CPS_OPT
       if (astContext.isFinalExpression
        && get<string>(symbol) == "::"      // For list conses.
-       && tycs.front().index() == TC_PRIM) // Need the new head to be primitive, as otherwise we violate GC invariant.
-        if (auto rec = std::get_if<RECORD>(&argument)) {
-          auto recursive_app = get_if<APP>(&rec->at(1));
-          if (recursive_app && isFixpointVar(get<0>(*recursive_app), astContext))
+       && (isPrim(tycs.front()) || isPrimAggr(tycs.front()))) // Need the new head to be primitive, as otherwise we violate GC invariant.
+        if (auto rec = std::get_if<RECORD>(&argument))
+          if (auto recursive_app = get_if<APP>(&rec->at(1));
+              recursive_app && isFixpointVar(get<0>(*recursive_app), astContext))
           {
             outs() << "Making " << get<lvar>(get<FN>(*astContext.enclosingFunctionExpr)) << " CPS\n";
 
-            Function *recursion_function;
+            Function *recursion_function,
+                     *const parentFunction = builder.GetInsertBlock()->getParent();
 
             if (!astContext.isListCPSFunction) {
               if (auto p = module.getFunction(nameForFunction(get<lvar>(get<FN>(*astContext.enclosingFunctionExpr)), true)))
@@ -638,6 +656,17 @@ Value* compile(IRBuilder<>& builder,
             auto cons_val = recurse(rec->at(0), false);
             auto arg_val = recurse(arg_exp, false); // the argument to the call
 
+            //! Here, we relocate the record on the old heap
+            if (auto len = isPrimAggr(tycs.front())) {
+              len = 8 * (len+1);
+              Value* new_storage = builder.CreateCall(module.getFunction(largeAllocFun),
+                                                      ConstantInt::get(Type::getInt64Ty(context), len), "reloc_storage");
+              new_storage = builder.CreatePointerCast(new_storage, genericPointerType, "reloc_target_storage_casted");
+              cons_val = builder.CreatePointerCast(cons_val, genericPointerType, "reloc_source_storage_casted");
+              builder.CreateMemCpy(new_storage, cons_val, len, 8);
+              cons_val = new_storage;
+            }
+
             auto result_record = record(builder, {cons_val, ConstantPointerNull::get(genericPointerType)}, GC::Heap::Old);
 
             // store the currently half-constructed cons node in the parameter
@@ -654,7 +683,6 @@ Value* compile(IRBuilder<>& builder,
               builder.CreateRetVoid();
             return nullptr;
           }
-        }
 #endif
 
       switch (symrep.type) {
@@ -706,9 +734,19 @@ Value* compile(IRBuilder<>& builder,
       return recurse(get<dlexp>(get<TAPP>(expression)));
 
     // Implement exceptions as terminations for now.
-    case RAISE:
+    case RAISE: {
+      lexp& l = get<dlexp>(get<RAISE>(expression));
+
+      // Print the ĺocation of the exception being raised.
+      if (auto x = get_if<APP>(&l))
+      if (auto y = get_if<RECORD>(&get<1>(*x)))
+      if (auto z = get_if<STRING>(&y->at(1)))
+        builder.CreateCall(module.getOrInsertFunction("puts", FunctionType::get(Type::getInt32Ty(context), Type::getInt8PtrTy(context), false)),
+                           {builder.CreateGlobalStringPtr( *z)});
+
       insertAbort(builder);
       return nullptr;
+    }
     case HANDLE:
       return recurse(get<0>(get<HANDLE>(expression)));
 
