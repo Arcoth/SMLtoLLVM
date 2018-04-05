@@ -38,6 +38,12 @@ Value* boxReal(IRBuilder<>& builder, Value* x);
 Value* box(IRBuilder<>& builder, Value* x);
 Value* boxedValue(IRBuilder<>& builder, Value* value);
 
+std::vector<Value*> decomposeRecord(IRBuilder<>& builder, Value* rec, std::size_t len) ;
+
+lvar createNewVarIndex(lvar var, int index) {
+  return (var << (sizeof(lvar)*8/2)) + index;
+}
+
 // Cast the second argument to a pointer to int if the first one is an int.
 // Return appropriately casted pointer to stored location.
 Value* storeValue(IRBuilder<>& builder, Value* value, Value* ptr) {
@@ -283,15 +289,8 @@ Value* compileFunction(IRBuilder<>* builder,
 
 using namespace Lty;
 
-bool isPrim(tyc const& t) {
-  return t.index() == TC_PRIM;
-}
-// 0 if not, length > 1 if true
-std::size_t isPrimAggr(tyc const& t) {
-  if (auto tup = std::get_if<TC_TUPLE>(&t))
-    return std::all_of(tup->begin(), tup->end(), isPrim)? tup->size() : 0;
-  return 0;
-}
+bool isPrim(tyc const& t);
+std::size_t isPrimAggr(tyc const& t);
 
 Value* compile(IRBuilder<>& builder,
                lexp& expression,
@@ -299,12 +298,30 @@ Value* compile(IRBuilder<>& builder,
                SMLTranslationUnit& unit,
                AstContext astContext) {
   Module& module = *unit.module;
+
   auto recurse = [&] (lexp& e, std::optional<bool> last = std::nullopt) mutable {
     auto context = astContext;
     if (last.has_value())
       context.isFinalExpression = last.value();
     return compile(builder, e, variables, unit, context);
   };
+
+  auto establish_recursive_arguments = [&] (Function* f, lexp& arg_exp) {
+    std::vector<Value*> recursive_arguments;
+    if (auto len = astContext.isRecordFunction)
+      if (arg_exp.index() == RECORD)
+        for (auto& e : get<RECORD>(arg_exp))
+          recursive_arguments.push_back(box(builder, recurse(e, false)));
+      else
+        recursive_arguments = decomposeRecord(builder, recurse(arg_exp, false), len);
+    else
+      recursive_arguments.push_back(recurse(arg_exp, false));
+    if (astContext.isListCPSFunction) // If the last argument is the CPS one, the penultimate is propagated, too
+      recursive_arguments.push_back(f->arg_end()-2);
+    recursive_arguments.push_back(f->arg_end()-1);
+    return recursive_arguments;
+  };
+
   switch (expression.index()) {
     case VAR: {
       auto var = get<VAR>(expression);
@@ -342,92 +359,62 @@ Value* compile(IRBuilder<>& builder,
     }
     case FN: {
       astContext.isListCPSFunction = false; // We can do this here, as the CPS code below calls compileFunction directly
+      astContext.isRecordFunction = false; // We can do this here, as the CPS code below calls compileFunction directly
       return compileFunction(&builder, expression, variables, unit, astContext);
     }
     case LET: {
       auto& [let_var, assign_exp, body_exp] = get<LET>(expression);
 
-      {
-        auto freeOccursInLet = freeVarOccurrences(body_exp, &expression);
-        auto [occur_first, occur_last] = freeOccursInLet.equal_range(let_var);
-        if (std::distance(occur_first, occur_last) == 0 && get_if<FN>(&assign_exp)) {
-          return recurse(body_exp);
-        }
-        if (std::distance(occur_first, occur_last) == 1) {
-          auto [var, occurrence] = *occur_first;
-
-          /*
-            Perform eta-reduction.
-            If a function is only called once, substitute the function body as a let-expression.
-          */
-          bool reduced = false;
-          if (auto function_exp = get_if<FN>(&assign_exp)) {
-            auto app_exp = get_if<APP>(occurrence.enclosing_exp);
-            if (app_exp && &app_exp->first.get() == occurrence.holding_exp) {
-              reduced = true;
-              // Replace the application with a LET fnparam = argument IN fnbody END
-              auto argument = get<1>(*app_exp).get();
-              occurrence.enclosing_exp->emplace<LET>(get<0>(*function_exp),
-                                                     argument,
-                                                     get<2>(*function_exp));
-            }
-          }
-
-          if (!reduced
-           && (occurrence.enclosing_exp == &expression        // immediately enclosed by this exp,
-            || assign_exp.get().index() == PRIM               // a primitive operator declaration (no side effects),
-            || (occurrence.enclosing_exp->index() == CON
-             && occurrence.enclosing_exp == &body_exp))) {       // or a argument of an immediately enclosed constructor
-            *occur_first->second.holding_exp = assign_exp;
-            reduced = true;
-          }
-
-          // If either of the reductions has been performed:
-          if (reduced) {
-            expression = lexp{body_exp};
-            return recurse(expression);    // just return the body.
-          }
-        }
-      }
-
-      // If a record is only selected from, we can avoid constructing it in the first place.
-      if (auto record_exp = get_if<RECORD>(&assign_exp)) {
-        auto freeOccursInLet = freeVarOccurrences(body_exp, &expression);
-        auto [occur_first, occur_last] = freeOccursInLet.equal_range(let_var);
-        bool onlySelects = std::all_of(occur_first, occur_last, [] (auto& o) {
-          return o.second.enclosing_exp->index() == SELECT;
-        });
-        if (onlySelects) {
-          auto createNewVarIndex = [] (lvar var, int index) {
-            return (var << (sizeof(lvar)*8/2)) + index;
-          };
-
-          for (auto it = occur_first; it != occur_last; ++it) {
-            auto& [indices, _] = get<SELECT>(*it->second.enclosing_exp);
-            assert(indices.size() == 1);
-            auto index = indices[0];
-            auto new_index = createNewVarIndex(let_var, index);
-            // replace the SELECT with  a reference to the new variable we define below
-            it->second.enclosing_exp->emplace<VAR>(new_index);
-          }
-          lexp result = body_exp;
-          int elem_index = 0;
-          for (auto& rcd_elem : *record_exp) {
-            result.emplace<LET>(createNewVarIndex(let_var, elem_index++),
-                           rcd_elem,
-                           lexp{result});
-          }
-          expression = result;
-          return recurse(expression);
-        }
-      }
-
+      //! Compile this first, need functions to exist in module
       auto assign_value = recurse(assign_exp, false);
+
+      {
+        // Walk down the let chain
+        lexp* bottom = &assign_exp;
+        while (auto let = get_if<LET>(bottom))
+          bottom = &get<2>(*let).get();
+        if (auto srcd = get_if<SRECORD>(bottom)) {
+          auto& srcd_assignment = unit.assignedSRecords[let_var];
+          std::cout << "Creating srecord assignment ";
+          std::size_t i = 0;
+          for (auto& e : *srcd) {
+            if (auto var = get_if<VAR>(&e);
+                var && unit.assignedLambas.count(*var)) {
+              srcd_assignment[i] = unit.assignedLambas[*var];
+              std::cout << i << " -> " << unit.assignedLambas[*var]->getName().str() << ' ';
+            }
+            ++i;
+          }
+          std::cout << "\n";
+        }
+      }
+
+      if (auto select = get_if<SELECT>(&assign_exp))
+        if (auto var = get_if<VAR>(&get<dlexp>(*select).get()))
+          if (unit.assignedSRecords.count(*var)
+          &&  unit.assignedSRecords[*var].count(get<0>(*select)[0])) {
+            unit.assignedLambas[let_var] = unit.assignedSRecords[*var][get<0>(*select)[0]];
+            std::cout << "Propagating SCRD info " << let_var << " -> " << unit.assignedLambas[let_var]->getName().str() << std::endl;
+          }
+
       if (auto fn = get_if<FN>(&assign_exp)) {
         auto p = module.getFunction(nameForFunction(get<lvar>(*fn)));
         assert(p);
-        astContext.assignedLambas[let_var] = p;
+        unit.assignedLambas[let_var] = p;
       }
+      if (auto fix = get_if<FIX>(&assign_exp)) {
+        auto& [defs, in] = *fix;
+        if (auto l = get_if<VAR>(&in)) {
+          auto it = std::find_if(defs.begin(), defs.end(), [l] (auto const& tup) {
+            return get<lvar>(tup) == *l;
+          });
+          assert(it != defs.end());
+          auto p = module.getFunction(nameForFunction(get<lvar>(get<FN>(get<lexp>(*it)))));
+          assert(p);
+          unit.assignedLambas[let_var] = p;
+        }
+      }
+
       auto inner_vars = variables;
       inner_vars.emplace(let_var, assign_value);
       return compile(builder, body_exp, inner_vars, unit, astContext);
@@ -440,34 +427,14 @@ Value* compile(IRBuilder<>& builder,
         return compile_primop(builder, prim_oper, arg_exp, variables, unit, astContext);
       }
 
-      Value* arg_val = recurse(arg_exp, false);
-
-      // Always box. We cannot know when a function is being called generically or not.
-      FunctionType* fun_type = nullptr;
-      if (arg_val->getType()->isIntegerTy()) {
-        fun_type = intFunctionType(module);
-        arg_val = boxIntNoCast(builder, arg_val);
-      }
-      else if (arg_val->getType()->isDoubleTy()) {
-        arg_val = boxRealInInt(builder, arg_val);
-        fun_type = intFunctionType(module);
-      }
-      else
-        fun_type = genericFunctionType();
-
       if (isFixpointVar(fn_exp.get(), astContext)
        && (astContext.isFinalExpression || !astContext.isListCPSFunction)) {
-        std::cout << "Replacing app of " << astContext.fixPointVariable << ", final: " << std::boolalpha << astContext.isFinalExpression << "\n";
+//        std::cout << "Replacing recursive app of " << astContext.fixPointVariable << ", final: " << std::boolalpha << astContext.isFinalExpression << "\n";
         auto recursive_function = builder.GetInsertBlock()->getParent();
 
-        Value* result;
-        if (astContext.isListCPSFunction)
-          result = builder.CreateCall(recursive_function,
-                                           {arg_val, recursive_function->arg_begin()+1,
-                                                     recursive_function->arg_begin()+2});
-        else
-          result = builder.CreateCall(recursive_function,
-                                           {arg_val, recursive_function->arg_begin()+1}, "recursive_call");
+        auto recursive_arguments = establish_recursive_arguments(recursive_function, arg_exp);
+
+        auto result = builder.CreateCall(recursive_function, recursive_arguments, "recursive_call");
 
         if (astContext.isFinalExpression) {
           yieldValue(builder, result, astContext);
@@ -478,20 +445,30 @@ Value* compile(IRBuilder<>& builder,
 
       auto closure_ptr = builder.CreatePointerCast(recurse(fn_exp, false), closurePointerType, "closure_ptr");
 
-      Value* fn = nullptr;
-      if (auto lvar_ptr = get_if<VAR>(&fn_exp); lvar_ptr && astContext.assignedLambas.count(*lvar_ptr)) {
-        fn = astContext.assignedLambas[*lvar_ptr];
-        outs() << "Inserting function name " << fn->getName() << '\n';
+      if (auto lvar_ptr = get_if<VAR>(&fn_exp); lvar_ptr && unit.assignedLambas.count(*lvar_ptr)) {
+        auto fn = unit.assignedLambas[*lvar_ptr];
+//        outs() << "Inserting function name " << fn->getName() << '\n';
 
-        Value* val = builder.CreateCall(fn, {arg_val, closure_ptr});
-//        if (val->getType()->isIntegerTy()
-//         && !cast<Function>(fn)->hasFnAttribute("yieldsReal"))
-//          val = unboxedValue(builder, val);
+        std::vector<Value*> arguments;
 
-        return val;
+        std::string name = fn->getName();
+        name = "rec_" + name;
+        if (auto f = module.getFunction(name); f && arg_exp.get().index() == RECORD) {
+//          std::cout << "Inserting rec call\n";
+          fn = f;
+          for (auto& e : get<RECORD>(arg_exp.get()))
+            arguments.push_back(box(builder, recurse(e, false)));
+        }
+        else
+          arguments.push_back(box(builder, recurse(arg_exp, false)));
+        arguments.push_back(closure_ptr);
+
+        return builder.CreateCall(fn, arguments, "direct_call");
       }
-      else
-        fn = builder.CreateLoad(builder.CreatePointerCast(closure_ptr, fun_type->getPointerTo()->getPointerTo(heapAddressSpace), "fun_ptr_ptr"), "fun_ptr");
+
+      Value* arg_val = box(builder, recurse(arg_exp, false));
+
+      auto fn = builder.CreateLoad(builder.CreatePointerCast(closure_ptr, genericFunctionType()->getPointerTo()->getPointerTo(heapAddressSpace), "fun_ptr_ptr"), "fun_ptr");
 
       return builder.CreateCall(fn, {arg_val, closure_ptr});
     }
@@ -654,7 +631,7 @@ Value* compile(IRBuilder<>& builder,
             auto&  [fn_exp, arg_exp] = *recursive_app;
 
             auto cons_val = recurse(rec->at(0), false);
-            auto arg_val = recurse(arg_exp, false); // the argument to the call
+            auto arguments = establish_recursive_arguments(parentFunction, arg_exp); // the argument to the call
 
             //! Here, we relocate the record on the old heap
             if (auto len = isPrimAggr(tycs.front())) {
@@ -671,12 +648,14 @@ Value* compile(IRBuilder<>& builder,
 
             // store the currently half-constructed cons node in the parameter
             if (astContext.isListCPSFunction)
-              builder.CreateStore(result_record, builder.CreateConstGEP1_32(parentFunction->arg_begin() + 2, 2, "list_cps_slot"));
+              builder.CreateStore(result_record, builder.CreateConstGEP1_32(parentFunction->arg_end()-1, 2, "list_cps_slot"));
 
+            // The last argument is the freshly created record:
+            if (!astContext.isListCPSFunction)
+              arguments.emplace_back();
+            arguments.back() = builder.CreatePointerCast(result_record, genericPtrToPtr, "cps_result_record");
             // Perform the recursive call with the result in the CPS parameter.
-            builder.CreateCall(recursion_function,
-                               {arg_val, parentFunction->arg_begin()+1,
-                                builder.CreatePointerCast(result_record, genericPtrToPtr, "cps_result_record")});
+            builder.CreateCall(recursion_function, arguments);
             if (!astContext.isListCPSFunction)
               builder.CreateRet(result_record);
             else
@@ -702,7 +681,7 @@ Value* compile(IRBuilder<>& builder,
     }
 
     case RECORD: {
-      astContext.isFinalExpression = false;
+      astContext.isFinalExpression = false; // redundant?
       auto& elem_exps = get<RECORD>(expression);
       if (elem_exps.empty() && !astContext.isCtorArgument) // If a Ctor argument, we must yield something that a tag can be written into
         return ConstantPointerNull::get(genericPointerType);

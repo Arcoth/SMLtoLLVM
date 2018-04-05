@@ -113,15 +113,19 @@ public:
 
   std::map<Symbol::symbol, symbol_rep> symbolRepresentation;
 
+  std::unordered_map<PLambda::lvar, Function*> assignedLambas; // if a variable is assigned a lambda, this yields the function
+
+  std::unordered_map<PLambda::lvar, std::map<std::size_t, Function*>> assignedSRecords;
+
   // This map equates parameter index and the name of the LLVḾ function.
   std::map<PLambda::lvar, std::string> paramFuncs,
   // Includes both the lambda variable and the name of the entity it denotes.
                                        exportedDecls;
 };
 
-inline char const* nameForFunction(PLambda::lvar v, bool cps = false) {
+inline char const* nameForFunction(PLambda::lvar v, bool cps = false, bool rec = false) {
   auto n = new char[16] {};
-  std::sprintf(n, cps? "cps_lambda.v%d" : "lambda.v%d", v);
+  std::sprintf(n, "%s%slambda.v%d", (cps? "cps_" : ""), (rec? "rec_" : ""), v);
   return n;
 }
 
@@ -132,8 +136,8 @@ struct AstContext {
   bool isCtorArgument;         // Argument to a construtor
   bool moduleExportExpression; // The top-most lambda expression
   bool isListCPSFunction;      // True if this function stores the resulting list in parameter %3
+  std::size_t isRecordFunction;      // n > 0 if this function is an n-ary record function, otherwise 0
   PLambda::lexp* enclosingFunctionExpr; // If isListCPSFunction, this stores the expression for creating the second function definition
-  std::unordered_map<PLambda::lvar, Function*> assignedLambas; // if a variable is assigned a lambda, this yields the function
 };
 
 // The top-most compile function. It is passed the output of printing a lexp term in SML/NJ.

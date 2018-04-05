@@ -15,6 +15,8 @@ using std::get_if;
 
 using namespace PLambda;
 
+lvar createNewVarIndex(lvar var, int index);
+
 Value* getTagPtrFromRecordPtr(IRBuilder<>& builder, Value* rcd);
 
 Value* boxIntNoCast(IRBuilder<>& builder, Value* x) {
@@ -46,7 +48,8 @@ Value* box(IRBuilder<>& builder, Value* x) {
     return boxInt(builder, x);
   if (x->getType()->isDoubleTy())
     return boxReal(builder, x);
-  return x;
+
+  return builder.CreatePointerCast(x, genericPointerType, "box_ptr");
 }
 
 Value* unboxRealFromInt(IRBuilder<>& builder, Value* x) {
@@ -95,7 +98,7 @@ Value* unboxInt(IRBuilder<>& builder, Value* x) {
 // To cover regular and list-CPS cases
 void yieldValue(IRBuilder<>& builder, Value* v, AstContext astContext) {
   if (astContext.isListCPSFunction) {
-    builder.CreateStore(v, builder.CreateConstGEP1_32(builder.GetInsertBlock()->getParent()->arg_begin() + 2, 2, "list_cps_slot"));
+    builder.CreateStore(v, builder.CreateConstGEP1_32(builder.GetInsertBlock()->getParent()->arg_end()-1, 2, "list_cps_slot"));
     builder.CreateRetVoid();
   }
   else
@@ -109,6 +112,147 @@ auto freeVarOccurrences(vector<lexp>& exps, lexp* enclosing) {
   return s;
 }
 
+void performReduction(lexp& expression);
+void performReduction(vector<lexp>& exps) {
+  for (auto& x : exps)
+    performReduction(x);
+}
+// Perform simplifications up to recursive function definitions.
+void performReduction(lexp& expression) {
+  switch(expression.index()) {
+    case FIX: {
+      auto& [decls, in] = get<FIX>(expression);
+      performReduction(in);
+    }
+    break;
+    case APP: {
+      auto& [fun, arg] = get<APP>(expression);
+      performReduction(fun);
+      performReduction(arg);
+    }
+    break;
+    case LET: {
+      auto& [let_var, assign_exp, body_exp] = get<LET>(expression);
+      performReduction(assign_exp);
+      performReduction(body_exp);
+      {
+        auto freeOccursInLet = freeVarOccurrences(body_exp, &expression);
+        auto [occur_first, occur_last] = freeOccursInLet.equal_range(let_var);
+        if (std::distance(occur_first, occur_last) == 0 && get_if<FN>(&assign_exp))
+        {
+          expression = lexp{body_exp};
+          return;
+        }
+        if (std::distance(occur_first, occur_last) == 1)
+        {
+          auto [var, occurrence] = *occur_first;
+
+          /*
+            Perform eta-reduction.
+            If a function is only called once, substitute the function body as a let-expression.
+          */
+          bool reduced = false;
+          if (auto function_exp = get_if<FN>(&assign_exp))
+          if (auto app_exp = get_if<APP>(occurrence.enclosing_exp);
+              app_exp && &app_exp->first.get() == occurrence.holding_exp)
+          {
+            reduced = true;
+            // Replace the application with a LET fnparam = argument IN fnbody END
+            auto argument = get<1>(*app_exp).get();
+            occurrence.enclosing_exp->emplace<LET>(get<0>(*function_exp),
+                                                   argument,
+                                                   get<2>(*function_exp));
+          }
+
+
+          if (!reduced
+           && (occurrence.enclosing_exp == &expression        // immediately enclosed by this exp,
+            || assign_exp.get().index() == PRIM               // a primitive operator declaration (no side effects),
+            || ((occurrence.enclosing_exp->index() == CON
+              || occurrence.enclosing_exp->index() == RECORD)
+             && occurrence.enclosing_exp == &body_exp))) {       // or a argument of an immediately enclosed constructor
+            *occur_first->second.holding_exp = assign_exp;
+            reduced = true;
+          }
+
+          if (let_var == 140)
+            std::cout << "140 is reduced? " << reduced << '\n';
+          // If either of the reductions has been performed:
+          if (reduced) {
+            performReduction(expression = lexp{body_exp});
+            return;
+          }
+        }
+      }
+
+      // If a record is only selected from, we can avoid constructing it in the first place.
+      if (auto record_exp = get_if<RECORD>(&assign_exp)) {
+        auto freeOccursInLet = freeVarOccurrences(body_exp, &expression);
+        auto [occur_first, occur_last] = freeOccursInLet.equal_range(let_var);
+        bool onlySelects = std::all_of(occur_first, occur_last, [] (auto& o) {
+          return o.second.enclosing_exp->index() == SELECT;
+        });
+        if (onlySelects) {
+          for (auto it = occur_first; it != occur_last; ++it) {
+            auto& [indices, _] = get<SELECT>(*it->second.enclosing_exp);
+            assert(indices.size() == 1);
+            auto index = indices[0];
+            auto new_index = createNewVarIndex(let_var, index);
+            // replace the SELECT with  a reference to the new variable we define below
+            it->second.enclosing_exp->emplace<VAR>(new_index);
+          }
+          lexp result = body_exp;
+          int elem_index = 0;
+          for (auto& rcd_elem : *record_exp) {
+            result.emplace<LET>(createNewVarIndex(let_var, elem_index++),
+                           lexp{rcd_elem},
+                           lexp{result});
+          }
+          expression = result;
+        }
+      }
+    }
+    break;
+    case SWITCH: {
+      auto& [arg, matches, default_] = get<SWITCH>(expression);
+      performReduction(arg);
+      for (auto& [_, target] : matches)
+        performReduction(target);
+      if (default_)
+        performReduction(default_.value());
+    }
+    break;
+    case CON: {
+      auto& [x, y, arg] = get<CON>(expression);
+      performReduction(arg);
+    }
+    break;
+    // Simple compositional cases:
+
+    case HANDLE: return performReduction(get<0>(    get<HANDLE>(expression)));
+    case ETAG:   return performReduction(get<dlexp>(  get<ETAG>(expression)));
+    case SELECT: return performReduction(get<dlexp>(get<SELECT>(expression)));
+    case PACK:   return performReduction(get<dlexp>(  get<PACK>(expression)));
+    case WRAP:   return performReduction(get<dlexp>(  get<WRAP>(expression)));
+    case UNWRAP: return performReduction(get<dlexp>(get<UNWRAP>(expression)));
+    // Elide this information to ease optimisation
+    case TFN:
+      expression = lexp{get<dlexp>(get<TFN>(expression))};
+      return performReduction(expression);
+    case TAPP:
+      expression = lexp{get<dlexp>(get<TAPP>(expression))};
+      return performReduction(expression);
+
+
+    case RECORD:  return performReduction(get<RECORD>(expression));
+    case SRECORD: return performReduction(get<SRECORD>(expression));
+    case VECTOR: return performReduction(get<0>(get<VECTOR>(expression)));
+
+
+    default:
+      ;
+  }
+}
 
 std::multimap<lvar, Occurrence> freeVarOccurrences( lexp& exp, lexp* enclosing) {
   switch(exp.index()) {
@@ -398,64 +542,124 @@ bool isReal(lty l) {
   }
   return false;
 }
-bool isPrimitiveAggrType(tyc const& t) {
-  if (t.index() == TC_PRIM)
-    return true;
-  else if (auto tup = std::get_if<TC_TUPLE>(&t))
-    return std::all_of(tup->begin(), tup->end(), isPrimitiveAggrType);
-  return false;
+
+bool isPrim(tyc const& t) {
+  return t.index() == TC_PRIM;
+}
+// 0 if not, length > 1 if true
+std::size_t isAggr(tyc const& t) {
+  return t.index() == TC_TUPLE? get<TC_TUPLE>(t).size() : 0;
+}
+std::size_t isPrimAggr(tyc const& t) {
+  if (auto tup = std::get_if<TC_TUPLE>(&t))
+    return std::all_of(tup->begin(), tup->end(), isPrim)? tup->size() : 0;
+  return 0;
 }
 
+std::vector<Value*> decomposeRecord(IRBuilder<>& builder, Value* rec, std::size_t len) {
+  auto base = builder.CreatePointerCast(rec, genericPtrToPtr, "record_ptr");
+  std::vector<Value*> arguments;
+  // Construct the argument set when delegating to the record function
+  for (std::size_t i = 0; i < len; ++i)
+    arguments.push_back(builder.CreateLoad(builder.CreateConstGEP1_32(base, i+1, "elem_ptr"), "elem"));
+  return arguments;
+}
 
 Value* compileFunction(IRBuilder<>* builder,
-                       lexp& expression,
+                       lexp& original_expression,
                        std::map<PLambda::lvar, Value*> const& variables,
                        SMLTranslationUnit& unit,
                        AstContext astContext) {
   auto& module = *unit.module;
-  auto& context = module.getContext();
+  auto expression = original_expression;
 
   auto& [fn_var, fn_lty, fn_body] = get<FN>(expression);
   auto free_vars = freeVars(expression);
 
-  const bool isRealFunction = isReal(fn_lty),
-              isIntFunction = isInteger(fn_lty);
-
+  char const* name = astContext.moduleExportExpression? "export" : nameForFunction(fn_var, astContext.isListCPSFunction, astContext.isRecordFunction);
 
   FunctionType* fun_type;
   if (astContext.moduleExportExpression)
     fun_type = FunctionType::get(genericPointerType, {genericPointerType}, false);
   else
-    fun_type = isIntFunction? intFunctionType(module, astContext.isListCPSFunction) :
-              isRealFunction? realFunctionType(module, astContext.isListCPSFunction) :
-                              genericFunctionType(astContext.isListCPSFunction);
+    fun_type = genericFunctionType(astContext.isListCPSFunction);
 
   // Create the hoisted function.
-  char const* name = astContext.moduleExportExpression? "export" : nameForFunction(fn_var, astContext.isListCPSFunction);
-  auto F = Function::Create(fun_type, Function::ExternalLinkage, name, &module);
+  auto ImplementationFunction = astContext.isListCPSFunction && astContext.isRecordFunction? nullptr : Function::Create(fun_type, Function::ExternalLinkage, name, &module),
+       InterfaceFunction = ImplementationFunction;
 
-  unit.paramFuncs[fn_var] = F->getName();
+  unit.paramFuncs[fn_var] = name;
 
-  BasicBlock *BB = BasicBlock::Create(context, "entry", F);
-  IRBuilder<> fun_builder(BB);
+  std::optional<IRBuilder<>> fun_builder_opt;
+  if (ImplementationFunction)
+    fun_builder_opt.emplace(BasicBlock::Create(context, "entry", ImplementationFunction));
+
+  performReduction(fn_body);
 
   std::map<PLambda::lvar, Value*> inner_variables;
-  // Adapt free bindings from the enclosing expression
 
+  //! Cover record functions
+  if (auto tyc = get_if<LT_TYC>(&fn_lty))
+  if (auto len = isAggr(*tyc)) {
+    auto freeOccursInLet = freeVarOccurrences(fn_body, &expression);
+    auto [occur_first, occur_last] = freeOccursInLet.equal_range(fn_var);
+    bool onlySelects = std::all_of(occur_first, occur_last, [] (auto& o) {
+      return o.second.enclosing_exp->index() == SELECT;
+    });
+    if (onlySelects)
+    {
+      astContext.isRecordFunction = len;
+      // The record function with N args
+      std::vector<Type*> types(len, genericPointerType);
+      types.push_back(genericPtrToPtr); // env
+      if (astContext.isListCPSFunction)
+        types.push_back(genericPtrToPtr); // CPS
+
+      ImplementationFunction = Function::Create(FunctionType::get(astContext.isListCPSFunction? Type::getVoidTy(context) : genericPointerType, types, false), Function::InternalLinkage,
+                                       nameForFunction(fn_var, astContext.isListCPSFunction, true), &module);
+
+      if (InterfaceFunction) {
+        auto arguments = decomposeRecord(fun_builder_opt.value(), InterfaceFunction->arg_begin(), len);
+        arguments.push_back(InterfaceFunction->arg_begin()+1);
+        if (astContext.isListCPSFunction)
+          arguments.push_back(InterfaceFunction->arg_begin()+2);
+
+        yieldValue(fun_builder_opt.value(), fun_builder_opt.value().CreateCall(ImplementationFunction, arguments, "propagate"), astContext);
+      }
+      else
+        InterfaceFunction = ImplementationFunction;
+
+      // The remaining code is using the wrapper function instead
+      fun_builder_opt.emplace(BasicBlock::Create(context, "entry_rec", ImplementationFunction));
+
+      // Replace all uses of the record argument
+      for (auto it = occur_first; it != occur_last; ++it) {
+        auto& [indices, _] = get<SELECT>(*it->second.enclosing_exp);
+        assert(indices.size() == 1);
+        auto index = indices[0];
+        auto new_index = createNewVarIndex(fn_var, index);
+        inner_variables[new_index] = ImplementationFunction->arg_begin() + index;
+        // replace the SELECT with  a reference to the new variable we define below
+        it->second.enclosing_exp->emplace<VAR>(new_index);
+      }
+    }
+  }
+
+  unit.closureLength.emplace_back(InterfaceFunction, free_vars.size()+1); // Add the closure length after potentially replacing ImplementationFunction
+
+  IRBuilder<>& fun_builder = fun_builder_opt.value();
+
+  if (!astContext.isRecordFunction)
+   inner_variables[fn_var] = ImplementationFunction->arg_begin();
+
+
+  // Adapt free bindings from the enclosing expression
   {
     unsigned index = 1; //! Start at 1; we pass the closure in without offset.
-    auto env = F->arg_begin()+1; // second argument is the environment.
+    auto env = ImplementationFunction->arg_end()-1-astContext.isListCPSFunction; // environment argument
     for (auto var : free_vars)
       inner_variables[var] = fun_builder.CreateLoad(fun_builder.CreateConstGEP1_32(env, index++, "captured_ptr"), "captured");
   }
-
-  // Don't unbox in CPS functions, they're not meant to be generic
-  if (isRealFunction && !astContext.isListCPSFunction)
-    inner_variables[fn_var] = unboxRealFromInt(fun_builder, F->arg_begin());
-  else if (isIntFunction && !astContext.isListCPSFunction)
-    inner_variables[fn_var] = unboxedValue(fun_builder, F->arg_begin());
-  else
-    inner_variables[fn_var] = F->arg_begin();
 
   std::vector<Type*> types{fun_type->getPointerTo()};
   for (auto var : free_vars) {
@@ -472,42 +676,20 @@ Value* compileFunction(IRBuilder<>* builder,
   astContext.isFinalExpression = true;
 
   AstContext newAstCtx = astContext;
-  newAstCtx.enclosingFunctionExpr = &expression;
+  newAstCtx.enclosingFunctionExpr = &original_expression;
   newAstCtx.moduleExportExpression = false;
-  if (auto retv = compile(fun_builder, fn_body, inner_variables, unit, newAstCtx)) {
-    // Adjust the return type to avoid the address space casts on inlining
-//    if (!retv->getType()->isPointerTy()) {
-//      F->removeFromParent(); // Remove first.
-//      fun_type = FunctionType::get(genericIntType(module), fun_type->params(), false);
-//      types[0] = fun_type->getPointerTo();
-//      auto NF = Function::Create(FunctionType::get(genericIntType(module), fun_type->params(), false),
-//                                 Function::ExternalLinkage, name, &module);
-//
-//      // Copy the function (from http://llvm.org/doxygen/ArgumentPromotion_8cpp_source.html line 365)
-//      NF->getBasicBlockList().splice(NF->begin(), F->getBasicBlockList());
-//      for (auto I = F->arg_begin(), I2 = NF->arg_begin();
-//          I != F->arg_end(); ++I, ++I2) {
-//         I->replaceAllUsesWith(&*I2);
-//         I2->takeName(&*I);
-//      }
-//      F = NF;
-//      F->addFnAttr("yieldsReal");
-//    }
-
+  if (auto retv = compile(fun_builder, fn_body, inner_variables, unit, newAstCtx))
     yieldValue(fun_builder, retv, astContext);
-  }
-
-  unit.closureLength.emplace_back(F, free_vars.size()+1); // Add the closure length after pot replacing F
 
   if (astContext.isListCPSFunction)
-    return F;
+    return InterfaceFunction;
   if (!astContext.moduleExportExpression) {
     assert(builder && "Builder must be non-zero!");
 
     auto wrapper_type = StructType::create(types);
     auto memory = createAllocation(module, *builder, wrapper_type);
 
-    auto aggregate_v = builder->CreateInsertValue(UndefValue::get(wrapper_type), F, {0}, "fun_ptr_slot"); // store function pointer...
+    auto aggregate_v = builder->CreateInsertValue(UndefValue::get(wrapper_type), InterfaceFunction, {0}, "fun_ptr_slot"); // store function pointer...
     {
       unsigned index = 1;
       for (auto var : free_vars) {
