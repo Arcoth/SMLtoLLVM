@@ -155,11 +155,17 @@ int main(int argc, char** argv) try
   addGCSymbols(*module);
   SMLCompiler::compile_top(unit);
 
+  {
+    std::string str = argv[1];
+    str += ".llvm";
+    writeToFile(*module, str.c_str());
+  }
+
   SMLCompiler::performOptimisationPasses(*module);
 
   {
     std::string str = argv[1];
-    str += ".llvm";
+    str += "-post-opt.llvm";
     writeToFile(*module, str.c_str());
   }
 
