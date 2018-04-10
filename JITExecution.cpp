@@ -32,11 +32,11 @@ namespace SMLCompiler {
 
 using namespace llvm;
 
-void writeToFile(Module const& m, char const* name) {
+void writeToFile(Module const& m,  char const* name) {
   std::error_code ec;
   raw_fd_ostream stream(name, ec, sys::fs::OpenFlags::F_None);
   // Print out all of the generated code.
-  outs() << "\n\tPrinting LLVM Module to file...\n";
+  outs() << "\nPrinting LLVM Module to file...\n";
   m.print(stream, nullptr);
 }
 
@@ -189,6 +189,9 @@ void addGCSymbols(Module& mod) {
                                    largeAllocFun, &mod),
        mutable_fun = Function::Create(type, GlobalVariable::ExternalLinkage,
                                    mutableAllocFun, &mod);
+
+  for (auto f : {small_fun, large_fun, mutable_fun})
+    f->addFnAttr(Attribute::get(context, Attribute::ReadOnly));
 
   {
     IRBuilder<> builder(BasicBlock::Create(context, "entry", small_fun));
