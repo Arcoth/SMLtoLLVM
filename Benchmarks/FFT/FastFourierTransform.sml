@@ -16,9 +16,9 @@ in
 end
 
 fun benchmarkAll (_, _, _, 0, _) = ()
-  | benchmarkAll (function, start_arg, stride, num_strides, repeats) = 
-  (print ((LargeInt.toString(benchmark (fn () => function start_arg) repeats)) ^ "\n");
-   benchmarkAll (function, start_arg + stride, stride, num_strides - 1, repeats))
+  | benchmarkAll (function, start_arg, factor, num_strides, repeats) = 
+  (print (Real.toString(Math.ln(Real.fromLargeInt(benchmark (fn () => function start_arg) repeats)) / Math.ln (real factor)) ^ ",\n");
+   benchmarkAll (function, start_arg * factor, factor, num_strides - 1, repeats))
 
 
 (**
@@ -60,19 +60,19 @@ struct
 
   fun phase {real,imag} =
       if Real.==(imag,0.0)
-      then if Real.signBit real
+      then if real < 0.0
            then Math.pi
            else 0.0
       else if Real.==(real,0.0)
-      then if Real.signBit imag
+      then if imag < 0.0
            then Real.~(Real./(Math.pi,2.0))
            else Real./(Math.pi,2.0)
       else
           let
               val a = Math.atan (Real./(imag,real))
           in
-              if Real.signBit real
-              then if Real.signBit imag
+              if real < 0.0
+              then if imag < 0.0
                    then a - Math.pi
                    else a + Math.pi
               else a
@@ -147,25 +147,22 @@ fun exp_pi x = Complex.exp({real=0.0, imag = ~2.0 * Math.pi * x})
 
 fun concat(x::xs, y) = x :: concat(xs, y)
   | concat(nil, y) = y
-  
-fun drop(x, 0) = x
-  | drop(x::xs, n) = drop(xs, n-1)
 
 local structure C = Complex in
 
-	fun fft(x, s) = let
+	fun fft x = let
 
-		fun fft_aux(x::xs, 1, _) = [x]
-		  | fft_aux(x : Complex.complex list, N : int, s : int) = 
+		fun fft_aux(x::_, to_drop, 1, _) = [x]
+		  | fft_aux(x : Complex.complex list, to_drop, N : int, s : int) = 
 		let 
-			val X1 = fft_aux(x, N div 2, 2*s) 
-			val X2 = fft_aux(List.drop(x, s), N div 2, 2*s)
+			val X1 = fft_aux(List.drop(x, to_drop), 0, N div 2, 2*s) 
+			val X2 = fft_aux(x, to_drop + s, N div 2, 2*s)
 
 			fun new_x1(x1::x1s, x2::x2s, k) = (C.+(x1, C.*(exp_pi(real(k)/real(N)), x2))) :: new_x1(x1s, x2s, k+1)
-			  | new_x1(_, nil, _) = nil
+			  | new_x1(_, _, _) = nil
 
 			fun new_x2(x1::x1s, x2::x2s, k) = (C.-(x1, C.*(exp_pi(real(k)/real(N)), x2))) :: new_x2(x1s, x2s, k+1)
-			  | new_x2(_, nil, _) = nil
+			  | new_x2(_, _, _) = nil
 
 			val first = new_x1(X1, X2, 0)
 			val second = new_x2(X1, X2, 0)
@@ -174,7 +171,7 @@ local structure C = Complex in
 		end 
 
 	in 
-		fft_aux(x, List.length x, s)
+		fft_aux(x, 0, List.length x, 1)
 	end
 
 end
@@ -186,7 +183,7 @@ fun makeList n (s : real) = let
   fun aux (0, _, l) = l
     | aux (m, t, l) = let
       val base = t*t
-      val adjusted = base - (10.0 * Real.realFloor(base/10.0)) 
+      val adjusted = if base > 10.0 then base - 10.0 else base
      in
        aux(m-1, t+1.0, (Complex.fromReal adjusted) :: l)
      end
@@ -196,4 +193,4 @@ in aux(n, s, nil) end
 fun hash_list (x::xs) = hash_complex(x) + 0.9 * hash_list xs
   | hash_list nil = 0.0
 
-fun main() = benchmarkAll((fn n => hash_list(fft(makeList n 0.0, 1))), 10000, 5000, 20, 10)
+fun main() = benchmarkAll((fn n => hash_list(fft(makeList n 0.0))), 4096, 2, 8, 5)

@@ -19,7 +19,7 @@ end
 
 fun benchmarkAll (_, _, _, 0, _) = ()
   | benchmarkAll (function, start_arg, stride, num_strides, repeats) = 
-  (print ((LargeInt.toString(benchmark (fn () => function start_arg) repeats)) ^ "\n");
+  (print (LargeInt.toString(benchmark (fn () => function start_arg) repeats) ^ "\n");
    benchmarkAll (function, start_arg + stride, stride, num_strides - 1, repeats))
 
 (* generation: *)
@@ -76,4 +76,4 @@ fun hash_list (x::xs) = x + 0.9 * hash_list xs
 fun hash_matrix (x::xs) = hash_list x + 0.8 * hash_matrix xs
   | hash_matrix nil = 0.0
 
-fun main() = benchmarkAll ((fn n => hash_matrix (matrix_product (matrix n 0.0) (matrix n 1.0))), 100, 50, 20, 5) 
+fun main() = benchmarkAll ((fn n => hash_matrix (matrix_product (matrix n 0.0) (matrix n 1.0))), 100, 30, 30, 10) 
