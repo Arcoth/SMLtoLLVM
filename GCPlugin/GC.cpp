@@ -56,7 +56,9 @@ struct SelfRelocatingHeap {
 
   void increaseNextSize() {
     nextSize = size * increaseFactor; // scale the heap
+#if GC_DEBUG_LOG_LVL >= 1
     std::cout << "Resizing heap " << (int) heap << " to " << nextSize << '\n';
+#endif
   }
 
   void cleanup(uint8_t* stackPtr);
@@ -128,7 +130,7 @@ uint64_t getRecordLength(uint64_t tag) {
     try {
       return closureLengths.at((void*)tag);
     } catch(std::out_of_range const&) { // Library closures?
-      std::cerr << "\nFunction tag not found: " << std::hex << tag << std::dec << '\n';
+      std::cerr << "\nGC: Function tag not found: " << std::hex << tag << std::dec << '\n';
       throw;
     }
     break;
