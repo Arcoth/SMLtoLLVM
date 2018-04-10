@@ -25,9 +25,7 @@ Value* boxIntNoCast(IRBuilder<>& builder, Value* x) {
 }
 
 Value* boxRealInInt(IRBuilder<>& builder, Value* x) {
-  auto& module = *builder.GetInsertBlock()->getModule();
-
-  x = builder.CreateBitCast(x, genericIntType(module), "real_to_int");
+  x = builder.CreateBitCast(x, genericIntType, "real_to_int");
   return builder.CreateOr(x, GC::floatTag, "tagged_float");
 }
 
@@ -59,10 +57,9 @@ Value* unboxRealFromInt(IRBuilder<>& builder, Value* x) {
 }
 
 Value* unboxReal(IRBuilder<>& builder, Value* x) {
-  auto& mod = *builder.GetInsertBlock()->getModule();
   if (x->getType()->isDoubleTy())
     return x;
-  x = builder.CreatePtrToInt(x, genericIntType(mod), "float_in_int");
+  x = builder.CreatePtrToInt(x, genericIntType, "float_in_int");
   return unboxRealFromInt(builder, x);
 }
 
@@ -72,8 +69,8 @@ Value* compile(IRBuilder<>& builder,
                SMLTranslationUnit&,
                AstContext astContext);
 
-Type* boxedType(Module& m, Type* t) {
-  return t->isDoubleTy()? genericIntType(m) : t;
+Type* boxedType(Type* t) {
+  return t->isDoubleTy()? genericIntType : t;
 }
 Value* unboxedValue(IRBuilder<>& builder, Value* x) {
   if (x->getType()->isIntegerTy())
@@ -91,7 +88,7 @@ Value* boxedValue(IRBuilder<>& builder, Value* value) {
 Value* unboxInt(IRBuilder<>& builder, Value* x) {
   if (x->getType()->isIntegerTy())
     return x;
-  return unboxedValue(builder, builder.CreatePtrToInt(x, genericIntType(*builder.GetInsertBlock()->getModule()), "ptr_to_int"));
+  return unboxedValue(builder, builder.CreatePtrToInt(x, genericIntType, "ptr_to_int"));
 }
 
 
@@ -464,7 +461,7 @@ SMLTranslationUnit::SMLTranslationUnit(lexp const& exp, ImportsVector imports, l
 
 Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type,
                         GC::Heap heap = GC::Heap::Young, std::size_t n = 1) {
-  static const auto size_type = genericIntType(module);
+  static const auto size_type = genericIntType;
   auto alloc_fun = module.getFunction(heap == GC::Heap::Mutable? mutableAllocFun :
                                       heap == GC::Heap::Young? smallAllocFun :
                                       heap == GC::Heap::Old? largeAllocFun : throw std::runtime_error{""});
@@ -500,7 +497,7 @@ Value* extractTag(IRBuilder<>& builder, SMLTranslationUnit const& unit, Value* e
   }
 }
 
-ConstantInt* getTag(Module& module, SMLTranslationUnit const& unit, con const& constr) {
+ConstantInt* getTag(SMLTranslationUnit const& unit, con const& constr) {
   std::size_t value;
   switch (constr.index()) {
     case DATAcon: {
@@ -516,7 +513,7 @@ ConstantInt* getTag(Module& module, SMLTranslationUnit const& unit, con const& c
     default:
       throw UnsupportedException{"constructor " + std::to_string(constr.index())};
   }
-  return ConstantInt::get(genericIntType(module), value);
+  return ConstantInt::get(genericIntType, value);
 }
 
 using namespace Lty;
@@ -555,6 +552,40 @@ std::size_t isPrimAggr(tyc const& t) {
     return std::all_of(tup->begin(), tup->end(), isPrim)? tup->size() : 0;
   return 0;
 }
+
+Type* LLVMTypeFromTYC(tyc const& t) {
+  if (auto primtyc = get_if<TC_PRIM>(&t)) {
+    if (*primtyc == PrimTyc::PT_INT31
+     || *primtyc == PrimTyc::PT_INT32)
+      return genericIntType;
+    else if (*primtyc == PrimTyc::PT_REAL)
+      return realType;
+  }
+  return genericPointerType;
+}
+
+std::vector<Type*> LLVMTypesFromTYC(tyc const& t) {
+
+  if (auto tup = std::get_if<TC_TUPLE>(&t)) {
+    std::vector<Type*> v;
+    for (auto&& x : *tup)
+      v.push_back(LLVMTypeFromTYC(x));
+    return v;
+  }
+  throw std::invalid_argument{"LLVMTypesFromTYC: expected tyc-tuple!"};
+}
+
+void unboxForUnboxedCall(IRBuilder<>& builder, std::vector<Value*>& values, Function* targetFn) {
+  std::size_t index = 0;
+  for (auto& v : values) {
+    if (targetFn->arg_begin()[index].getType()->isIntegerTy())
+      v = unboxInt(builder, v);
+    else if (targetFn->arg_begin()[index].getType()->isDoubleTy())
+      v = unboxReal(builder, v);
+    ++index;
+  }
+}
+
 
 std::vector<Value*> decomposeRecord(IRBuilder<>& builder, Value* rec, std::size_t len) {
   auto base = builder.CreatePointerCast(rec, genericPtrToPtr, "record_ptr");
@@ -610,7 +641,7 @@ Value* compileFunction(IRBuilder<>* builder,
     {
       astContext.isRecordFunction = len;
       // The record function with N args
-      std::vector<Type*> types(len, genericPointerType);
+      std::vector<Type*> types = LLVMTypesFromTYC(*tyc);
       types.push_back(genericPtrToPtr); // env
       if (astContext.isListCPSFunction)
         types.push_back(genericPtrToPtr); // CPS
@@ -620,6 +651,7 @@ Value* compileFunction(IRBuilder<>* builder,
 
       if (InterfaceFunction) {
         auto arguments = decomposeRecord(fun_builder_opt.value(), InterfaceFunction->arg_begin(), len);
+        unboxForUnboxedCall(fun_builder_opt.value(), arguments, ImplementationFunction);
         arguments.push_back(InterfaceFunction->arg_begin()+1);
         if (astContext.isListCPSFunction)
           arguments.push_back(InterfaceFunction->arg_begin()+2);
@@ -644,10 +676,21 @@ Value* compileFunction(IRBuilder<>* builder,
       }
     }
   }
+//  else if (astContext.isFunctionOfFixPoint
+//        && (isPrim(astContext.fixPoint.value().paramType)
+//         || isPrim(astContext.fixPoint.value().retType))) {
+//    ImplementationFunction = Function::Create(FunctionType::get(
+//      LLVMTypeFromTYC(astContext.fixPoint.value().retType),
+//      {LLVMTypeFromTYC(astContext.fixPoint.value().paramType)},
+//      Function::InternalLinkage,
+//      nameForFunction(fn_var, astContext.isListCPSFunction, true), &module);
+//  }
 
   unit.closureLength.emplace_back(InterfaceFunction, free_vars.size()+1); // Add the closure length after potentially replacing ImplementationFunction
+  unit.closureLength.emplace_back(ImplementationFunction, free_vars.size()+1); // .. for both functions.
 
   IRBuilder<>& fun_builder = fun_builder_opt.value();
+
 
   if (!astContext.isRecordFunction)
    inner_variables[fn_var] = ImplementationFunction->arg_begin();
@@ -666,13 +709,13 @@ Value* compileFunction(IRBuilder<>* builder,
     auto var_it = variables.find(var);
     if (var_it == variables.end())
       throw CompileFailException{"FN: Captured variable " + std::to_string(var) + " not defined in enclosing scope"};
-    types.push_back(boxedType(module, var_it->second->getType()));
+    types.push_back(boxedType(var_it->second->getType()));
   }
 
-  if (astContext.isBodyOfFixpoint)
-    astContext.isBodyOfFixpoint = false;
+  if (astContext.isFunctionOfFixPoint)
+    astContext.isFunctionOfFixPoint = false;
   else
-    astContext.fixPointVariable = -1;
+    astContext.fixPoint = std::nullopt;
   astContext.isFinalExpression = true;
 
   AstContext newAstCtx = astContext;

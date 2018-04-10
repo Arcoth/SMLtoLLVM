@@ -39,34 +39,13 @@ inline const auto genericPointerType = Type::getInt8Ty(context)->getPointerTo(he
                   genericPtrToPtr = genericPointerType->getPointerTo(heapAddressSpace),
                   closurePointerType = genericPtrToPtr;
 
-inline const auto realType = Type::getDoubleTy(context);
+inline const auto genericIntType = Type::getInt64Ty(context);
 
-inline auto genericIntType(Module& m) {
-  return m.getDataLayout().getIntPtrType(m.getContext());
-}
+inline const auto realType = Type::getDoubleTy(context);
 
 // This is one half of an entire data tag, so has half the width of a machine word.
 inline auto tagType(Module& m) {
-  return IntegerType::get(m.getContext(), genericIntType(m)->getBitWidth()/2) ;
-}
-
-// The type of a function that takes an integer.
-inline auto intFunctionType(Module& m, bool isCPS = false) {
-  if (isCPS)
-    return FunctionType::get(Type::getVoidTy(context),
-                             {genericIntType(m),        // the argument
-                              closurePointerType,  // the environment.
-                              genericPtrToPtr}, // the CPS pointer.
-                             false); // not variadic
-  return FunctionType::get(genericPointerType,   // the return value
-                           {genericIntType(m),        // the argument
-                            closurePointerType}, // the environment.
-                           false);                    // not variadic
-}
-
-// The type of a function that takes an integer.
-inline auto realFunctionType(Module& m, bool isCPS = false) {
-  return intFunctionType(m, isCPS);
+  return IntegerType::get(m.getContext(), genericIntType->getBitWidth()/2) ;
 }
 
 // The default function type of any function in the PLC.
@@ -113,9 +92,11 @@ public:
 
   std::map<Symbol::symbol, symbol_rep> symbolRepresentation;
 
-  std::unordered_map<PLambda::lvar, Function*> assignedLambas; // if a variable is assigned a lambda, this yields the function
+  using ConstantVariant = std::variant<Function*, Constant*>;
 
-  std::unordered_map<PLambda::lvar, std::map<std::size_t, Function*>> assignedSRecords;
+  std::unordered_map<PLambda::lvar, ConstantVariant> assignedConstant; // if a variable is assigned a lambda, this yields the function
+
+  std::unordered_map<PLambda::lvar, std::map<std::size_t, ConstantVariant>> assignedSRecords;
 
   // This map equates parameter index and the name of the LLVḾ function.
   std::map<PLambda::lvar, std::string> paramFuncs,
@@ -124,14 +105,20 @@ public:
 };
 
 inline char const* nameForFunction(PLambda::lvar v, bool cps = false, bool rec = false) {
-  auto n = new char[16] {};
+  auto n = new char[32] {};
   std::sprintf(n, "%s%slambda.v%d", (cps? "cps_" : ""), (rec? "rec_" : ""), v);
   return n;
 }
 
 struct AstContext {
-  PLambda::lvar fixPointVariable;
-  bool isBodyOfFixpoint;       // immediate of a fixpoint function (above is the corresponding var.)
+  struct FixPointInfo {
+    PLambda::lvar variable;
+    std::vector<Lty::tyc> const& paramType;
+    Lty::tyc const& retType;
+  };
+  std::optional<FixPointInfo> fixPoint;
+  bool isFunctionOfFixPoint;
+
   bool isFinalExpression;      // expression whose value is immediately yielded by a function
   bool isCtorArgument;         // Argument to a construtor
   bool moduleExportExpression; // The top-most lambda expression

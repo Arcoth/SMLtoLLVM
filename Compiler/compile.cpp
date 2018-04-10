@@ -28,7 +28,7 @@ lexp const* outermostClosedLet(lexp const& exp);
 Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type,
                         GC::Heap heap = GC::Heap::Young, std::size_t n = 1);
 Value* extractTag(IRBuilder<>& builder, SMLTranslationUnit const& unit, Value* exp_v, con const& constr);
-ConstantInt* getTag(Module& module, SMLTranslationUnit const& unit, con const& constr);
+ConstantInt* getTag(SMLTranslationUnit const& unit, con const& constr);
 
 
 Value* boxIntNoCast(IRBuilder<>& builder, Value* x);
@@ -47,13 +47,12 @@ lvar createNewVarIndex(lvar var, int index) {
 // Cast the second argument to a pointer to int if the first one is an int.
 // Return appropriately casted pointer to stored location.
 Value* storeValue(IRBuilder<>& builder, Value* value, Value* ptr) {
-  auto& mod = *builder.GetInsertBlock()->getModule();
   if (value->getType()->isIntegerTy()) {
     ptr = builder.CreatePointerCast(ptr, value->getType()->getPointerTo(heapAddressSpace), "int_store");
     builder.CreateStore(boxIntNoCast(builder, value), ptr);
   }
   else if (value->getType()->isDoubleTy()) {
-    ptr = builder.CreatePointerCast(ptr, genericIntType(mod)->getPointerTo(heapAddressSpace), "float_in_int_store");
+    ptr = builder.CreatePointerCast(ptr, genericIntType->getPointerTo(heapAddressSpace), "float_in_int_store");
     builder.CreateStore(boxRealInInt(builder, value), ptr);
   }
   else
@@ -61,7 +60,7 @@ Value* storeValue(IRBuilder<>& builder, Value* value, Value* ptr) {
   return ptr;
 }
 
-Type* boxedType(Module& m, Type* t);
+Type* boxedType(Type* t);
 
 Value* unboxedValue(IRBuilder<>& builder, Value* x);
 
@@ -173,7 +172,7 @@ Value* compile_primop(IRBuilder<>& builder,
       #define COMP(fltname, intname) \
         result = builder.CreateIntCast(isFloat? builder.CreateFCmp(CmpInst::FCMP_##fltname, arg_values[0](), arg_values[1](), "float_comp") \
                                               : builder.CreateICmp(CmpInst::ICMP_##intname, arg_values[0](), arg_values[1](), "int_comp"),  \
-                                       genericIntType(module), false, "bool_to_int"); break;
+                                       genericIntType, false, "bool_to_int"); break;
       switch (cmp.oper) {
         case EQL: COMP(OEQ, EQ)
         case NEQ: COMP(ONE, NE)
@@ -231,10 +230,11 @@ Value* compile_primop(IRBuilder<>& builder,
 template <typename Rng>
 Value* record(IRBuilder<>& builder, Rng const& values, GC::Heap heap = GC::Heap::Young ) {
   auto& module = *builder.GetInsertBlock()->getModule();
+
   // The type used to hold the results while they're being computed.
-  std::vector<Type*> record_elem_types{genericIntType(module)};
+  std::vector<Type*> record_elem_types{genericIntType};
   for (auto x : values)
-    record_elem_types.push_back(boxedType(module, x->getType()));
+    record_elem_types.push_back(boxedType(x->getType()));
   auto record_type = StructType::create(record_elem_types);
 
   assert(DataLayout{&module}.getTypeAllocSize(record_type)== std::size(record_elem_types) * 8);
@@ -242,7 +242,7 @@ Value* record(IRBuilder<>& builder, Rng const& values, GC::Heap heap = GC::Heap:
   //! DON'T ALLOCATE memory first; first compute values, then the heap array to store them in.
   auto storage = createAllocation(module, builder, record_type, heap);
 
-  auto tag_v = ConstantInt::get(genericIntType(module), (std::size(record_elem_types) << GC::recordFlagLength) | GC::lengthTag
+  auto tag_v = ConstantInt::get(genericIntType, (std::size(record_elem_types) << GC::recordFlagLength) | GC::lengthTag
                                                       | ((uint64_t)0xBEEF << 32));
   auto aggregate_v = builder.CreateInsertValue(UndefValue::get(record_type), tag_v, {0}, "record_tag");
   for (unsigned i = 0; i < std::size(values); ++i)
@@ -274,7 +274,7 @@ void insertAbort(IRBuilder<>& builder) {
 
 bool isFixpointVar(lexp& fn_exp, AstContext const& astContext) {
   return fn_exp.index() == VAR
-      && get<VAR>(fn_exp) == astContext.fixPointVariable;
+      && astContext.fixPoint && get<VAR>(fn_exp) == astContext.fixPoint.value().variable;
 }
 
 // To cover regular and list-CPS cases
@@ -291,6 +291,8 @@ using namespace Lty;
 
 bool isPrim(tyc const& t);
 std::size_t isPrimAggr(tyc const& t);
+
+void unboxForUnboxedCall(IRBuilder<>& builder, std::vector<Value*>& values, Function* targetFn);
 
 Value* compile(IRBuilder<>& builder,
                lexp& expression,
@@ -311,11 +313,11 @@ Value* compile(IRBuilder<>& builder,
     if (auto len = astContext.isRecordFunction)
       if (arg_exp.index() == RECORD)
         for (auto& e : get<RECORD>(arg_exp))
-          recursive_arguments.push_back(box(builder, recurse(e, false)));
+          recursive_arguments.push_back(recurse(e, false));
       else
         recursive_arguments = decomposeRecord(builder, recurse(arg_exp, false), len);
     else
-      recursive_arguments.push_back(recurse(arg_exp, false));
+      recursive_arguments.push_back(box(builder, recurse(arg_exp, false)));
     if (astContext.isListCPSFunction) // If the last argument is the CPS one, the penultimate is propagated, too
       recursive_arguments.push_back(f->arg_end()-2);
     recursive_arguments.push_back(f->arg_end()-1);
@@ -325,6 +327,10 @@ Value* compile(IRBuilder<>& builder,
   switch (expression.index()) {
     case VAR: {
       auto var = get<VAR>(expression);
+      if (auto iter = unit.assignedConstant.find(var);
+          iter != unit.assignedConstant.end())
+        if (auto c = get_if<Constant*>(&iter->second))
+          return *c;
       auto iter = variables.find(var);
       if (iter == variables.end())
         throw CompileFailException{"Variable not in scope: " + std::to_string(var)};
@@ -332,15 +338,15 @@ Value* compile(IRBuilder<>& builder,
     }
     case INT: {
       auto i = get<INT>(expression);
-      return ConstantInt::getSigned(genericIntType(module), i);
+      return ConstantInt::getSigned(genericIntType, i);
     }
     case WORD: {
       auto i = get<WORD>(expression);
-      return ConstantInt::get(genericIntType(module), i);
+      return ConstantInt::get(genericIntType, i);
     }
     case REAL: {
       auto i = get<REAL>(expression);
-      return ConstantFP::get(Type::getDoubleTy(context), i);
+      return ConstantFP::get(realType, i);
     }
     case STRING: {
       auto& s = get<STRING>(expression);
@@ -375,17 +381,14 @@ Value* compile(IRBuilder<>& builder,
           bottom = &get<2>(*let).get();
         if (auto srcd = get_if<SRECORD>(bottom)) {
           auto& srcd_assignment = unit.assignedSRecords[let_var];
-          std::cout << "Creating srecord assignment ";
           std::size_t i = 0;
           for (auto& e : *srcd) {
             if (auto var = get_if<VAR>(&e);
-                var && unit.assignedLambas.count(*var)) {
-              srcd_assignment[i] = unit.assignedLambas[*var];
-              std::cout << i << " -> " << unit.assignedLambas[*var]->getName().str() << ' ';
+                var && unit.assignedConstant.count(*var)) {
+              srcd_assignment[i] = unit.assignedConstant[*var];
             }
             ++i;
           }
-          std::cout << "\n";
         }
       }
 
@@ -393,14 +396,17 @@ Value* compile(IRBuilder<>& builder,
         if (auto var = get_if<VAR>(&get<dlexp>(*select).get()))
           if (unit.assignedSRecords.count(*var)
           &&  unit.assignedSRecords[*var].count(get<0>(*select)[0])) {
-            unit.assignedLambas[let_var] = unit.assignedSRecords[*var][get<0>(*select)[0]];
-            std::cout << "Propagating SCRD info " << let_var << " -> " << unit.assignedLambas[let_var]->getName().str() << std::endl;
+            unit.assignedConstant[let_var] = unit.assignedSRecords[*var][get<0>(*select)[0]];
           }
 
+      if (auto i = get_if<INT>(&assign_exp))
+        unit.assignedConstant[let_var] = ConstantInt::get(genericIntType, *i);
+      if (auto f = get_if<REAL>(&assign_exp))
+        unit.assignedConstant[let_var] = ConstantFP::get(realType, *f);
       if (auto fn = get_if<FN>(&assign_exp)) {
         auto p = module.getFunction(nameForFunction(get<lvar>(*fn)));
         assert(p);
-        unit.assignedLambas[let_var] = p;
+        unit.assignedConstant[let_var] = p;
       }
       if (auto fix = get_if<FIX>(&assign_exp)) {
         auto& [defs, in] = *fix;
@@ -411,7 +417,7 @@ Value* compile(IRBuilder<>& builder,
           assert(it != defs.end());
           auto p = module.getFunction(nameForFunction(get<lvar>(get<FN>(get<lexp>(*it)))));
           assert(p);
-          unit.assignedLambas[let_var] = p;
+          unit.assignedConstant[let_var] = p;
         }
       }
 
@@ -433,6 +439,8 @@ Value* compile(IRBuilder<>& builder,
         auto recursive_function = builder.GetInsertBlock()->getParent();
 
         auto recursive_arguments = establish_recursive_arguments(recursive_function, arg_exp);
+        if (astContext.isRecordFunction)
+          unboxForUnboxedCall(builder, recursive_arguments, recursive_function);
 
         auto result = builder.CreateCall(recursive_function, recursive_arguments, "recursive_call");
 
@@ -443,28 +451,33 @@ Value* compile(IRBuilder<>& builder,
         return result;
       }
 
-      auto closure_ptr = builder.CreatePointerCast(recurse(fn_exp, false), closurePointerType, "closure_ptr");
-
-      if (auto lvar_ptr = get_if<VAR>(&fn_exp); lvar_ptr && unit.assignedLambas.count(*lvar_ptr)) {
-        auto fn = unit.assignedLambas[*lvar_ptr];
-//        outs() << "Inserting function name " << fn->getName() << '\n';
+      if (auto lvar_ptr = get_if<VAR>(&fn_exp); lvar_ptr && unit.assignedConstant.count(*lvar_ptr))
+        if (auto variant = unit.assignedConstant[*lvar_ptr]; auto fn_p = get_if<Function*>(&variant)) {
+        auto fn = *fn_p;
 
         std::vector<Value*> arguments;
-
-        std::string name = fn->getName();
-        name = "rec_" + name;
-        if (auto f = module.getFunction(name); f && arg_exp.get().index() == RECORD) {
-//          std::cout << "Inserting rec call\n";
+        if (auto f = module.getFunction("rec_" + std::string{fn->getName()}); f && arg_exp.get().index() == RECORD) {
           fn = f;
           for (auto& e : get<RECORD>(arg_exp.get()))
-            arguments.push_back(box(builder, recurse(e, false)));
+            arguments.push_back(recurse(e, false));
+          unboxForUnboxedCall(builder, arguments, fn);
         }
         else
           arguments.push_back(box(builder, recurse(arg_exp, false)));
-        arguments.push_back(closure_ptr);
+
+        auto iter = std::find_if(unit.closureLength.begin(), unit.closureLength.end(), [fn] (auto const& pair) {
+          return pair.first == fn;
+        });
+        assert(iter != unit.closureLength.end());
+        if (iter->second == 0)
+          arguments.push_back(ConstantPointerNull::get(genericPointerType));
+        else
+          arguments.push_back(builder.CreatePointerCast(recurse(fn_exp, false), closurePointerType, "closure_ptr"));
 
         return builder.CreateCall(fn, arguments, "direct_call");
       }
+
+      auto closure_ptr = builder.CreatePointerCast(recurse(fn_exp, false), closurePointerType, "closure_ptr");
 
       Value* arg_val = box(builder, recurse(arg_exp, false));
 
@@ -479,16 +492,23 @@ Value* compile(IRBuilder<>& builder,
       */
       auto& [decls, exp] = get<FIX>(expression);
       vector<Value*> closure_prs;
-      for (auto& [var, _, fn] : decls) {
+      for (auto& [var, lty, fn] : decls) {
         if (fn.index() != FN)
           throw UnsupportedException{"FIX expressions must declare functions"};
         auto inner_vars = variables;
         for (auto& [var, _1, _2] : decls)
-          inner_vars[var] = builder.CreateIntToPtr(ConstantInt::get(genericIntType(module), 0xDEADBEEF), genericPointerType);
+          inner_vars[var] = builder.CreateIntToPtr(ConstantInt::get(genericIntType, 0xDEADBEEF), genericPointerType);
 
+        auto tyc_arr = get_if<TC_ARROW>(get_if<LT_TYC>(&lty));
+        if (!tyc_arr)
+          throw CompileFailException{"No arrow type in FIX expression?"};
+        auto& [_, args, rets] = *tyc_arr;
+        assert(rets.size() == 1 && "More than one return type in FIX function?");
         closure_prs.push_back(compile(builder, fn, inner_vars, unit,
-                                      {.isBodyOfFixpoint = true,
-                                       .fixPointVariable = var,
+                                      {.fixPoint = AstContext::FixPointInfo{.variable = var,
+                                                                            .paramType = args,
+                                                                            .retType = rets[0]},
+                                       .isFunctionOfFixPoint = true,
                                        .isFinalExpression = false}));
       }
       // Adjust the pointers in all environments to refer to the allocated closures.
@@ -541,7 +561,7 @@ Value* compile(IRBuilder<>& builder,
                                               default_, cases.size());
       for (auto& [constructor, exp] : cases) {
         auto case_bb = BasicBlock::Create(context, "case", func, exit_block);
-        switch_inst->addCase(getTag(module, unit, constructor), case_bb);
+        switch_inst->addCase(getTag(unit, constructor), case_bb);
 
         auto case_builder = std::make_unique<IRBuilder<>>(case_bb);
         auto vars = variables;
@@ -570,7 +590,7 @@ Value* compile(IRBuilder<>& builder,
       if (std::any_of(begin(results), end(results), [] (auto& pair) {
         return pair.second->getType()->isIntegerTy();
       })) {
-        result_node = builder.CreatePHI(genericIntType(module), results.size(), "switch_result");
+        result_node = builder.CreatePHI(genericIntType, results.size(), "switch_result");
         for (auto& [result_builder, result] : results) {
           result_node->addIncoming(unboxInt(*result_builder, result), result_builder->GetInsertBlock());
           result_builder->CreateBr(exit_block);
@@ -621,7 +641,7 @@ Value* compile(IRBuilder<>& builder,
               else {
                 auto newAstCtx = astContext;
                 newAstCtx.isListCPSFunction = true;
-                newAstCtx.isBodyOfFixpoint = true;
+                newAstCtx.isFunctionOfFixPoint = true;
                 recursion_function = cast<Function>(compileFunction(&builder, *newAstCtx.enclosingFunctionExpr, variables, unit, newAstCtx));
               }
             }
