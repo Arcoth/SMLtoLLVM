@@ -128,6 +128,10 @@ namespace Real {
     return boxNoCast((Int)std::floor(unboxReal(i)));
   }
 
+  Int fromLargeInt(Int i, Ptr[]) {
+    return boxReal(i);
+  }
+
 }
 
 namespace LargeInt {
@@ -137,6 +141,20 @@ namespace LargeInt {
     alloc[0] = boxNativeTag(4);
     alloc[1] = std::sprintf((char*)(alloc + 2), "%" PRId64, i >> GC::valueFlagLength);
     return alloc;
+  }
+
+  const Int maxInt = std::numeric_limits<Int>::max();
+
+}
+
+namespace Option {
+
+  Ptr valOf(Ptr p, Ptr[]) {
+    if (!p) {
+      std::cerr << "valOf: NONE!";
+      std::abort();
+    }
+    return p;
   }
 
 }
@@ -204,22 +222,24 @@ const boost::unordered_map<std::string, boost::container::map<boost::container::
   {"96B2FB8000CFA053281A20BA159C7DD2",  {{{0, 8}, func(List::drop)},
                                          {{0, 9}, func(List::length)},
                                          {{0, 2}, func(List::hd)}}},
-  {"6959FE45225D4BD55C2D2CCD9C538D66", {{{0, 25}, func(LargeInt::toString)}}},
+  {"6959FE45225D4BD55C2D2CCD9C538D66", {{{0, 2}, (Ptr)LargeInt::maxInt},
+                                        {{0, 25}, func(LargeInt::toString)}}},
   {"CAD9434B073913D9EA0BF5829FBCA04E", {{{0, 25}, func(LargeInt::toString)}}},
   {"15264C47F5ED8119799A5101E44495E0", {{{0, 6}, func(Time::toMilliseconds)}}},
   {"A44C25B0AB637462740A552AFDE72D60", {{{0, 5}, func(Timer::startRealTimer)},
                                         {{0, 7}, func(Timer::checkRealTimer)}}},
   {"E1310EABC08F1107773C2652358627F1", {{{0, 37}, func(Real::toString)},
                                         {{0, 47}, func(Real::intFloor)},
-                                        {{0, 51}, func(Real::realFloor)}}},
+                                        {{0, 51}, func(Real::realFloor)},
+                                        {{0, 58}, func(Real::fromLargeInt)}}},
   {"F4360A6CAB125CD5827C4328E911CBCF", {{{0, 15}, func(Math::cosh)},
                                         {{0, 14}, func(Math::sinh)},
                                         {{0, 12}, func(Math::ln)},
                                         {{0, 0}, (Ptr)Math::pi},
                                         {{0, 10}, func(Math::exp)},
                                         {{0, 8}, func(Math::atan)},
-
-                                        }}
+                                        }},
+  {"769FA65058A4551AC2A541F6CAA27F6F", {{{0, 3}, func(Option::valOf)}}}
 //  {"F6EF4B2BCBE3E725BB9EB04ACA2B6DCC", {{{0, 2}, func(Vector::tabulate}},
 //                                        {{0, 13}, func()}}
 }};
