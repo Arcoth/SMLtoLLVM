@@ -85,7 +85,9 @@ void parseEntityData(SMLTranslationUnit& unit, std::istream& stream) {
           skip_to(ss, '|');
         }
       }
-      else if (kind == "structure") {
+      else if (kind == "structure"
+            || kind == "signature"
+            || kind == "functor") {
         name = Parser::parse_symbol_id(stream);
         name_already_parsed = true;
         for (std::string str; stream >> str && str != "end";)
@@ -110,9 +112,12 @@ SMLTranslationUnit parseSMLFile(std::string const& fileName) {
   std::istream stream(new Parser::log_input_buf(output.rdbuf(), std::cout));
 
   auto importMap = parseImports(stream);
+  if (!stream)
+    throw std::runtime_error{"parseSMLFile: couldn't parse imports"};
 
-  // stream.exceptions(std::ios::failbit);
   auto plambda = parseVerbosePlambda(stream);
+  if (stream.eof())
+    throw std::runtime_error{"parseSMLFile: No information on exports?"};
   if (!stream)
     throw std::runtime_error{"parseSMLFile: couldn't parse PLambda"};
 
@@ -151,23 +156,29 @@ int main(int argc, char** argv) try
 
   auto module = unit.module;
 
+  auto write = [&] (char const* extension) {
+    std::string str = argv[1];
+    str += "-";
+    str += extension;
+    str += ".llvm";
+    writeToFile(*module, str.c_str());
+  };
+
+
   // Invoke the compiler.
   addGCSymbols(*module);
   SMLCompiler::compile_top(unit);
 
-  {
-    std::string str = argv[1];
-    str += ".llvm";
-    writeToFile(*module, str.c_str());
-  }
+  write("pre-opt");
 
   SMLCompiler::performOptimisationPasses(*module);
 
-  {
-    std::string str = argv[1];
-    str += "-post-opt.llvm";
-    writeToFile(*module, str.c_str());
-  }
+  write("post-opt");
+
+  SMLCompiler::performStatepointsPass(*module);
+
+  write("post-statepoints");
+
 
   if (verifyModule(*module, &errs())) {
     errs() << "\nThe code is ill-formed!\n\n";
@@ -175,8 +186,6 @@ int main(int argc, char** argv) try
   }
 
   std::cout << "Exporting " << unit.exportedDecls << '\n';
-
-  SMLCompiler::performStatepointsPass(*module);
 
   if (verifyModule(*module, &errs())) {
     errs() << "The code is ill-formed!";
