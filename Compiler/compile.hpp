@@ -19,15 +19,14 @@ namespace SMLCompiler {
 using namespace SMLNJInterface;
 using namespace llvm;
 
-std::set<PLambda::lvar> freeVars( PLambda::lexp const& exp );
-
-
 struct Occurrence {
   PLambda::lexp* enclosing_exp; // the expression that immediately ENCLOSES the occurrence.
   PLambda::lexp* holding_exp; // the expression that IS the occurrence.
 };
 
-std::multimap<PLambda::lvar, Occurrence> freeVarOccurrences( PLambda::lexp& exp, PLambda::lexp* enclosing);
+class SMLTranslationUnit;
+
+std::multimap<PLambda::lvar, Occurrence> freeVarOccurrences( PLambda::lexp& exp, PLambda::lexp* enclosing, SMLTranslationUnit const& );
 
 inline const int heapAddressSpace = 1;
 
@@ -92,9 +91,9 @@ public:
 
   std::map<Symbol::symbol, symbol_rep> symbolRepresentation;
 
-  using ConstantVariant = std::variant<Function*, Constant*>;
+  using ConstantVariant = std::variant<Function*, ConstantData*>;
 
-  std::unordered_map<PLambda::lvar, ConstantVariant> assignedConstant; // if a variable is assigned a lambda, this yields the function
+  std::unordered_map<PLambda::lvar, ConstantVariant> assignedConstant; // if a variable is assigned a global constant
 
   std::unordered_map<PLambda::lvar, std::map<std::size_t, ConstantVariant>> assignedSRecords;
 
@@ -102,11 +101,15 @@ public:
   std::map<PLambda::lvar, std::string> paramFuncs,
   // Includes both the lambda variable and the name of the entity it denotes.
                                        exportedDecls;
+
+  PLambda::lvar importVariable;
 };
 
 inline char const* nameForFunction(PLambda::lvar v, bool cps = false, bool rec = false) {
-  auto n = new char[32] {};
-  std::sprintf(n, "%s%slambda.v%d", (cps? "cps_" : ""), (rec? "rec_" : ""), v);
+  const std::size_t len = 32;
+  char* n = new char[len] {};
+  auto written = std::snprintf(n, len, "%s%slambda.v%d", (cps? "cps_" : ""), (rec? "rec_" : ""), v);
+  assert(written > 0 && (std::size_t)written < len);
   return n;
 }
 
@@ -117,8 +120,8 @@ struct AstContext {
     Lty::tyc const& retType;
   };
   std::optional<FixPointInfo> fixPoint;
-  bool isFunctionOfFixPoint;
-
+  bool isFunctionOfFixPoint;   // The immediate function of a fixpoint variable
+  bool isSolelyApplied;        // Function only applied?
   bool isFinalExpression;      // expression whose value is immediately yielded by a function
   bool isCtorArgument;         // Argument to a construtor
   bool moduleExportExpression; // The top-most lambda expression

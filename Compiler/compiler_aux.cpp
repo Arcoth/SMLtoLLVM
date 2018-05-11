@@ -102,38 +102,59 @@ void yieldValue(IRBuilder<>& builder, Value* v, AstContext astContext) {
     builder.CreateRet(box(builder, v));
 }
 
-auto freeVarOccurrences(vector<lexp>& exps, lexp* enclosing) {
+auto freeVarOccurrences(vector<lexp>& exps, lexp* enclosing, SMLTranslationUnit const& unit) {
   std::multimap<lvar, Occurrence> s;
   for (auto& e : exps)
-    s = set_union(s, freeVarOccurrences(e, enclosing));
+    s = set_union(s, freeVarOccurrences(e, enclosing, unit));
   return s;
 }
 
-void performReduction(lexp& expression);
-void performReduction(vector<lexp>& exps) {
+void performReduction(lexp& expression, SMLTranslationUnit const& unit);
+void performReduction(vector<lexp>& exps, SMLTranslationUnit const& unit) {
   for (auto& x : exps)
-    performReduction(x);
+    performReduction(x, unit);
 }
 // Perform simplifications up to recursive function definitions.
-void performReduction(lexp& expression) {
+void performReduction(lexp& expression, SMLTranslationUnit const& unit) {
   switch(expression.index()) {
+    case VAR: {
+      auto& v = get<VAR>(expression);
+      if (unit.assignedConstant.count(v)) {
+        auto&& var = unit.assignedConstant.at(v);
+        if (auto x = get_if<ConstantData*>(&var))
+          expression.emplace<CONSTANT>(*x);
+      }
+    }
+    break;
     case FIX: {
       auto& [decls, in] = get<FIX>(expression);
-      performReduction(in);
+      performReduction(in, unit);
     }
     break;
     case APP: {
       auto& [fun, arg] = get<APP>(expression);
-      performReduction(fun);
-      performReduction(arg);
+      if (auto lvar_ptr = get_if<VAR>(&fun); lvar_ptr && unit.assignedConstant.count(*lvar_ptr)) {
+        auto fn = get<Function*>(unit.assignedConstant.at(*lvar_ptr));
+        auto iter = std::find_if(unit.closureLength.rbegin(), unit.closureLength.rend(), [fn] (auto const& pair) {
+          return pair.first == fn;
+        });
+        assert(iter != unit.closureLength.rend());
+        // No closure
+        auto var = *lvar_ptr;
+        fun.get().emplace<FUNCTION>(fn,
+                                    iter->second > 1? var : 0);
+      }
+      else
+        performReduction(fun, unit);
+      performReduction(arg, unit);
     }
     break;
     case LET: {
       auto& [let_var, assign_exp, body_exp] = get<LET>(expression);
-      performReduction(assign_exp);
-      performReduction(body_exp);
+      performReduction(assign_exp, unit);
+      performReduction(body_exp, unit);
       {
-        auto freeOccursInLet = freeVarOccurrences(body_exp, &expression);
+        auto freeOccursInLet = freeVarOccurrences(body_exp, &expression, unit);
         auto [occur_first, occur_last] = freeOccursInLet.equal_range(let_var);
         if (std::distance(occur_first, occur_last) == 0 && get_if<FN>(&assign_exp))
         {
@@ -172,11 +193,19 @@ void performReduction(lexp& expression) {
             reduced = true;
           }
 
-          if (let_var == 140)
-            std::cout << "140 is reduced? " << reduced << '\n';
           // If either of the reductions has been performed:
           if (reduced) {
-            performReduction(expression = lexp{body_exp});
+            performReduction(expression = lexp{body_exp}, unit);
+            return;
+          }
+        }
+        // If selecting from imports, push the selects inwards
+        if (auto select_exp = get_if<SELECT>(&assign_exp)) {
+          auto& [indices, rec_exp] = *select_exp;
+          if (auto var_p = get_if<VAR>(&rec_exp.get()); var_p && *var_p == unit.importVariable) {
+            for (auto it = occur_first; it != occur_last; ++it)
+              *it->second.holding_exp = lexp{*select_exp};
+            performReduction(expression = lexp{body_exp}, unit);
             return;
           }
         }
@@ -184,7 +213,7 @@ void performReduction(lexp& expression) {
 
       // If a record is only selected from, we can avoid constructing it in the first place.
       if (auto record_exp = get_if<RECORD>(&assign_exp)) {
-        auto freeOccursInLet = freeVarOccurrences(body_exp, &expression);
+        auto freeOccursInLet = freeVarOccurrences(body_exp, &expression, unit);
         auto [occur_first, occur_last] = freeOccursInLet.equal_range(let_var);
         bool onlySelects = std::all_of(occur_first, occur_last, [] (auto& o) {
           return o.second.enclosing_exp->index() == SELECT;
@@ -205,45 +234,45 @@ void performReduction(lexp& expression) {
                            lexp{rcd_elem},
                            lexp{result});
           }
-          expression = result;
+          expression = lexp{result};
         }
       }
     }
     break;
     case SWITCH: {
       auto& [arg, matches, default_] = get<SWITCH>(expression);
-      performReduction(arg);
+      performReduction(arg, unit);
       for (auto& [_, target] : matches)
-        performReduction(target);
+        performReduction(target, unit);
       if (default_)
-        performReduction(default_.value());
+        performReduction(default_.value(), unit);
     }
     break;
     case CON: {
       auto& [x, y, arg] = get<CON>(expression);
-      performReduction(arg);
+      performReduction(arg, unit);
     }
     break;
     // Simple compositional cases:
 
-    case HANDLE: return performReduction(get<0>(    get<HANDLE>(expression)));
-    case ETAG:   return performReduction(get<dlexp>(  get<ETAG>(expression)));
-    case SELECT: return performReduction(get<dlexp>(get<SELECT>(expression)));
-    case PACK:   return performReduction(get<dlexp>(  get<PACK>(expression)));
-    case WRAP:   return performReduction(get<dlexp>(  get<WRAP>(expression)));
-    case UNWRAP: return performReduction(get<dlexp>(get<UNWRAP>(expression)));
+    case HANDLE: return performReduction(get<0>(    get<HANDLE>(expression)), unit);
+    case ETAG:   return performReduction(get<dlexp>(  get<ETAG>(expression)), unit);
+    case SELECT: return performReduction(get<dlexp>(get<SELECT>(expression)), unit);
+    case PACK:   return performReduction(get<dlexp>(  get<PACK>(expression)), unit);
+    case WRAP:   return performReduction(get<dlexp>(  get<WRAP>(expression)), unit);
+    case UNWRAP: return performReduction(get<dlexp>(get<UNWRAP>(expression)), unit);
     // Elide this information to ease optimisation
     case TFN:
       expression = lexp{get<dlexp>(get<TFN>(expression))};
-      return performReduction(expression);
+      return performReduction(expression, unit);
     case TAPP:
       expression = lexp{get<dlexp>(get<TAPP>(expression))};
-      return performReduction(expression);
+      return performReduction(expression, unit);
 
 
-    case RECORD:  return performReduction(get<RECORD>(expression));
-    case SRECORD: return performReduction(get<SRECORD>(expression));
-    case VECTOR: return performReduction(get<0>(get<VECTOR>(expression)));
+    case RECORD:  return performReduction(get<RECORD>(expression), unit);
+    case SRECORD: return performReduction(get<SRECORD>(expression), unit);
+    case VECTOR: return performReduction(get<0>(get<VECTOR>(expression)), unit);
 
 
     default:
@@ -251,48 +280,59 @@ void performReduction(lexp& expression) {
   }
 }
 
-std::multimap<lvar, Occurrence> freeVarOccurrences( lexp& exp, lexp* enclosing) {
+std::multimap<lvar, Occurrence> freeVarOccurrences(lexp& exp, lexp* enclosing, SMLTranslationUnit const& unit) {
   switch(exp.index()) {
     case INT: case INT32: case WORD:
     case WORD32: case REAL: case PRIM:
-    case STRING: case GENOP:
+    case STRING: case GENOP: case CONSTANT:
       return {};
 
-    case VAR: return {{get<VAR>(exp), {.enclosing_exp = enclosing, .holding_exp = &exp}}};
+    case FUNCTION: {
+      auto v = get<lvar>(get<FUNCTION>(exp));
+      if (v == 0)
+        return {};
+      return {{v, {.enclosing_exp = enclosing, .holding_exp = &exp}}};
+    }
 
+    case VAR:
+      if (get<VAR>(exp) != unit.importVariable)
+        return {{get<VAR>(exp), {.enclosing_exp = enclosing, .holding_exp = &exp}}};
+      return {};
     case FN: {
       auto& fn = get<FN>(exp);
-      return set_subtract(freeVarOccurrences(get<dlexp>(fn), &exp), {get<lvar>(fn)});
+      return set_subtract(freeVarOccurrences(get<dlexp>(fn), &exp, unit), {get<lvar>(fn)});
     }
     case FIX: {
       auto& [decls, in] = get<FIX>(exp);
       std::multimap<lvar, Occurrence> freevars;
       std::set<lvar> params;
       for (auto& [var, _, body] : decls) {
-        freevars = set_union(freevars, freeVarOccurrences(body, &exp));
+        freevars = set_union(freevars, freeVarOccurrences(body, &exp, unit));
         params.insert(var);
       }
       return set_subtract(freevars, params);
     }
     case APP: {
       auto& [fun, arg] = get<APP>(exp);
-      return set_union(freeVarOccurrences(fun, &exp), freeVarOccurrences(arg, &exp));
+      return set_union(freeVarOccurrences(fun, &exp, unit),
+                       freeVarOccurrences(arg, &exp, unit));
     }
     case LET: {
       auto& [var, assign, in] = get<LET>(exp);
-      return set_union(freeVarOccurrences(assign, &exp), set_subtract(freeVarOccurrences(in, &exp), {var}));
+      return set_union(freeVarOccurrences(assign, &exp, unit),
+                       set_subtract(freeVarOccurrences(in, &exp, unit), {var}));
     }
     case SWITCH: {
       auto& [arg, matches, default_] = get<SWITCH>(exp);
-      auto s = freeVarOccurrences(arg, &exp);
+      auto s = freeVarOccurrences(arg, &exp, unit);
       for (auto& [constructor, target] : matches) {
-        auto exp_vars = freeVarOccurrences(target, &exp);
+        auto exp_vars = freeVarOccurrences(target, &exp, unit);
         if (constructor.index() == DATAcon)
           exp_vars = set_subtract(exp_vars, {get<lvar>(get<DATAcon>(constructor))});
         s = set_union(s, exp_vars);
       }
       if (default_)
-        s = set_union(s, freeVarOccurrences(default_.value(), &exp));
+        s = set_union(s, freeVarOccurrences(default_.value(), &exp, unit));
 
       return s;
     }
@@ -300,7 +340,7 @@ std::multimap<lvar, Occurrence> freeVarOccurrences( lexp& exp, lexp* enclosing) 
       using namespace Access;
 
       auto& [constr, tycs, arg] = get<CON>(exp);
-      auto fvs = freeVarOccurrences(arg, &exp);
+      auto fvs = freeVarOccurrences(arg, &exp, unit);
       // Compute any references to lambda-bound variables. Ignore SUSPs for now,.
       if (auto exn = get_if<EXN>(&get<Access::conrep>(constr))) {
         while (auto next = get_if<PATH>(exn))
@@ -314,22 +354,21 @@ std::multimap<lvar, Occurrence> freeVarOccurrences( lexp& exp, lexp* enclosing) 
     //! Exceptions are not supported yet; ignore raises and handles.
     case RAISE:  return {};
 
-
     // Simple compositional cases:
 
-    case HANDLE: return freeVarOccurrences(get<0>(    get<HANDLE>(exp)), &exp);
-    case ETAG:   return freeVarOccurrences(get<dlexp>(  get<ETAG>(exp)), &exp);
-    case SELECT: return freeVarOccurrences(get<dlexp>(get<SELECT>(exp)), &exp);
-    case PACK:   return freeVarOccurrences(get<dlexp>(  get<PACK>(exp)), &exp);
-    case WRAP:   return freeVarOccurrences(get<dlexp>(  get<WRAP>(exp)), &exp);
-    case UNWRAP: return freeVarOccurrences(get<dlexp>(get<UNWRAP>(exp)), &exp);
-    case TFN:    return freeVarOccurrences(get<dlexp>(   get<TFN>(exp)), &exp);
-    case TAPP:   return freeVarOccurrences(get<dlexp>(  get<TAPP>(exp)), &exp);
+    case HANDLE: return freeVarOccurrences(get<0>(    get<HANDLE>(exp)), &exp, unit);
+    case ETAG:   return freeVarOccurrences(get<dlexp>(  get<ETAG>(exp)), &exp, unit);
+    case SELECT: return freeVarOccurrences(get<dlexp>(get<SELECT>(exp)), &exp, unit);
+    case PACK:   return freeVarOccurrences(get<dlexp>(  get<PACK>(exp)), &exp, unit);
+    case WRAP:   return freeVarOccurrences(get<dlexp>(  get<WRAP>(exp)), &exp, unit);
+    case UNWRAP: return freeVarOccurrences(get<dlexp>(get<UNWRAP>(exp)), &exp, unit);
+    case TFN:    return freeVarOccurrences(get<dlexp>(   get<TFN>(exp)), &exp, unit);
+    case TAPP:   return freeVarOccurrences(get<dlexp>(  get<TAPP>(exp)), &exp, unit);
 
 
-    case RECORD:  return freeVarOccurrences( get<RECORD>(exp), &exp);
-    case SRECORD: return freeVarOccurrences(get<SRECORD>(exp), &exp);
-    case VECTOR: return freeVarOccurrences(get<0>(get<VECTOR>(exp)), &exp);
+    case RECORD:  return freeVarOccurrences( get<RECORD>(exp), &exp, unit);
+    case SRECORD: return freeVarOccurrences(get<SRECORD>(exp), &exp, unit);
+    case VECTOR: return freeVarOccurrences(get<0>(get<VECTOR>(exp)), &exp, unit);
 
 
     default:
@@ -337,107 +376,12 @@ std::multimap<lvar, Occurrence> freeVarOccurrences( lexp& exp, lexp* enclosing) 
   }
 }
 
-std::set<lvar> freeVars( vector<lexp> const& exps ) {
-  std::set<lvar> s;
-  for (auto& e : exps)
-    s = set_union(s, freeVars(e));
-  return s;
-}
-
-std::set<lvar> freeVars( lexp const& exp ) {
-  switch(exp.index()) {
-    case INT: case INT32: case WORD:
-    case WORD32: case REAL: case PRIM:
-    case STRING: case GENOP:
-      return {};
-
-    case VAR:
-    return {get<VAR>(exp)};
-
-    case FN: {
-      auto& [var, _, body] = get<FN>(exp);
-      return set_subtract(freeVars(body), {var});
-    }
-    case FIX: {
-      auto& [decls, in] = get<FIX>(exp);
-      std::set<lvar> freevars, params;
-      for (auto& [var, _, body] : decls) {
-        freevars = set_union(freevars, freeVars(body));
-        params.insert(var);
-      }
-      return set_subtract(freevars, params);
-    }
-    case APP: {
-      auto& [fun, arg] = get<APP>(exp);
-      return set_union(freeVars(fun), freeVars(arg));
-    }
-    case LET: {
-      auto& [var, assign, in] = get<LET>(exp);
-      return set_union(freeVars(assign), set_subtract(freeVars(in), {var}));
-    }
-    case SWITCH: {
-      auto& [arg, matches, default_] = get<SWITCH>(exp);
-      auto s = freeVars(arg);
-      for (auto& [constructor, target] : matches) {
-        auto exp_vars = freeVars(target);
-        if (constructor.index() == DATAcon)
-          exp_vars = set_subtract(exp_vars, {get<lvar>(get<DATAcon>(constructor))});
-        s = set_union(s, exp_vars);
-      }
-      if (default_)
-        s = set_union(s, freeVars(default_.value()));
-      return s;
-    }
-    case CON: {
-      using namespace Access;
-
-      auto& [constr, tycs, arg] = get<CON>(exp);
-      auto fvs = freeVars(arg);
-      // Compute any references to lambda-bound variables. Ignore SUSPs for now,.
-      if (auto exn = get_if<EXN>(&get<Access::conrep>(constr))) {
-        while (auto next = get_if<PATH>(exn))
-          exn = &next->first;
-        if (auto v = get_if<LVAR>(exn))
-          fvs.insert(*v);
-      }
-      return fvs;
-    }
-
-    //! Exceptions are not supported yet; ignore raises and handles.
-    case RAISE:  return {};
-
-
-    // Simple compositional cases:
-
-    case HANDLE: return freeVars(get<0>(    get<HANDLE>(exp)));
-    case ETAG:   return freeVars(get<dlexp>(  get<ETAG>(exp)));
-    case SELECT: return freeVars(get<dlexp>(get<SELECT>(exp)));
-    case PACK:   return freeVars(get<dlexp>(  get<PACK>(exp)));
-    case WRAP:   return freeVars(get<dlexp>(  get<WRAP>(exp)));
-    case UNWRAP: return freeVars(get<dlexp>(get<UNWRAP>(exp)));
-    case TFN:    return freeVars(get<dlexp>(   get<TFN>(exp)));
-    case TAPP:   return freeVars(get<dlexp>(  get<TAPP>(exp)));
-
-
-    case RECORD:  return freeVars( get<RECORD>(exp));
-    case SRECORD: return freeVars(get<SRECORD>(exp));
-    case VECTOR: return freeVars(get<0>(get<VECTOR>(exp)));
-
-
-    default:
-      throw UnsupportedException{"Unsupported lambda type " + std::to_string(exp.index())};
-  }
-}
-
-lexp const* outermostClosedLet(lexp const& exp) {
-  lexp const* ret = &exp;
-  while (ret->index() == LET) {
-    auto& [var, assign, value] = get<LET>(*ret);
-    if (freeVars(*ret).empty())
-      return ret;
-    ret = &value;
-  }
-  return freeVars(*ret).empty()? ret : nullptr;
+std::set<lvar> freeVars( lexp const& exp, SMLTranslationUnit const& unit ) {
+  auto occurrences = freeVarOccurrences(const_cast<lexp&>(exp), nullptr, unit);
+  std::set<lvar> vars;
+  for (auto it = occurrences.begin(), end = occurrences.end(); it != end; it = occurrences.upper_bound(it->first))
+    vars.insert(it->first);
+  return vars;
 }
 
 SMLTranslationUnit::SMLTranslationUnit(lexp const& exp, ImportsVector imports, llvm::Module* mod)
@@ -605,7 +549,6 @@ Value* compileFunction(IRBuilder<>* builder,
   auto expression = original_expression;
 
   auto& [fn_var, fn_lty, fn_body] = get<FN>(expression);
-  auto free_vars = freeVars(expression);
 
   char const* name = astContext.moduleExportExpression? "export" : nameForFunction(fn_var, astContext.isListCPSFunction, astContext.isRecordFunction);
 
@@ -616,7 +559,8 @@ Value* compileFunction(IRBuilder<>* builder,
     fun_type = genericFunctionType(astContext.isListCPSFunction);
 
   // Create the hoisted function.
-  auto ImplementationFunction = astContext.isListCPSFunction && astContext.isRecordFunction? nullptr : Function::Create(fun_type, Function::ExternalLinkage, name, &module),
+  auto ImplementationFunction = astContext.isListCPSFunction? nullptr
+                              : Function::Create(fun_type, Function::ExternalLinkage, name, &module),
        InterfaceFunction = ImplementationFunction;
 
   unit.paramFuncs[fn_var] = name;
@@ -625,14 +569,34 @@ Value* compileFunction(IRBuilder<>* builder,
   if (ImplementationFunction)
     fun_builder_opt.emplace(BasicBlock::Create(context, "entry", ImplementationFunction));
 
-  performReduction(fn_body);
 
   std::map<PLambda::lvar, Value*> inner_variables;
+
+  if (astContext.moduleExportExpression) {
+    GlobalVariable* imports_gvar = new GlobalVariable(/*Module=*/*unit.module,
+            /*Type=*/genericPtrToPtr,
+            /*isConstant=*/false,
+            /*Linkage=*/GlobalValue::PrivateLinkage,
+            /*Initializer=*/ConstantPointerNull::get(genericPtrToPtr),
+            /*Name=*/"imports");
+    fun_builder_opt.value().CreateStore(
+      fun_builder_opt.value().CreatePointerCast(ImplementationFunction->arg_begin(), genericPtrToPtr),
+      imports_gvar); // store the imports in the record
+    inner_variables[fn_var] = imports_gvar;
+    unit.importVariable = fn_var;
+  }
+  else
+    inner_variables[unit.importVariable] = variables.at(unit.importVariable);
+
+  performReduction(fn_body, unit);
+  performReduction(get<2>(get<FN>(original_expression)), unit);
+
+  const auto free_vars = freeVars(expression, unit); // Determine free vars after reduction
 
   //! Cover record functions
   if (auto tyc = get_if<LT_TYC>(&fn_lty))
   if (auto len = isAggr(*tyc)) {
-    auto freeOccursInLet = freeVarOccurrences(fn_body, &expression);
+    auto freeOccursInLet = freeVarOccurrences(fn_body, &expression, unit);
     auto [occur_first, occur_last] = freeOccursInLet.equal_range(fn_var);
     bool onlySelects = std::all_of(occur_first, occur_last, [] (auto& o) {
       return o.second.enclosing_exp->index() == SELECT;
@@ -676,23 +640,13 @@ Value* compileFunction(IRBuilder<>* builder,
       }
     }
   }
-//  else if (astContext.isFunctionOfFixPoint
-//        && (isPrim(astContext.fixPoint.value().paramType)
-//         || isPrim(astContext.fixPoint.value().retType))) {
-//    ImplementationFunction = Function::Create(FunctionType::get(
-//      LLVMTypeFromTYC(astContext.fixPoint.value().retType),
-//      {LLVMTypeFromTYC(astContext.fixPoint.value().paramType)},
-//      Function::InternalLinkage,
-//      nameForFunction(fn_var, astContext.isListCPSFunction, true), &module);
-//  }
 
   unit.closureLength.emplace_back(InterfaceFunction, free_vars.size()+1); // Add the closure length after potentially replacing ImplementationFunction
   unit.closureLength.emplace_back(ImplementationFunction, free_vars.size()+1); // .. for both functions.
 
   IRBuilder<>& fun_builder = fun_builder_opt.value();
 
-
-  if (!astContext.isRecordFunction)
+  if (!astContext.isRecordFunction && !astContext.moduleExportExpression)
    inner_variables[fn_var] = ImplementationFunction->arg_begin();
 
 
@@ -721,10 +675,12 @@ Value* compileFunction(IRBuilder<>* builder,
   AstContext newAstCtx = astContext;
   newAstCtx.enclosingFunctionExpr = &original_expression;
   newAstCtx.moduleExportExpression = false;
+  newAstCtx.isSolelyApplied = false;
   if (auto retv = compile(fun_builder, fn_body, inner_variables, unit, newAstCtx))
     yieldValue(fun_builder, retv, astContext);
 
-  if (astContext.isListCPSFunction)
+  if (astContext.isListCPSFunction
+   || (astContext.isSolelyApplied && free_vars.empty())) // If the function's closure is never needed, need not create it!
     return InterfaceFunction;
   if (!astContext.moduleExportExpression) {
     assert(builder && "Builder must be non-zero!");

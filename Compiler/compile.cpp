@@ -20,10 +20,9 @@ using std::get_if;
 using namespace PLambda;
 
 
-std::multimap<lvar, Occurrence> freeVarOccurrences(vector<lexp>& exps, lexp* enclosing);
-std::multimap<lvar, Occurrence> freeVarOccurrences( lexp& exp, lexp* enclosing);
-std::set<lvar> freeVars( vector<lexp> const& exps );
-std::set<lvar> freeVars( lexp const& exp );
+std::multimap<lvar, Occurrence> freeVarOccurrences(vector<lexp>& exps, lexp* enclosing, SMLTranslationUnit const&);
+std::multimap<lvar, Occurrence> freeVarOccurrences( lexp& exp, lexp* enclosing, SMLTranslationUnit const&);
+std::set<lvar> freeVars( lexp const& exp, SMLTranslationUnit const& );
 lexp const* outermostClosedLet(lexp const& exp);
 Value* createAllocation(Module& module, IRBuilder<>& builder, Type* type,
                         GC::Heap heap = GC::Heap::Young, std::size_t n = 1);
@@ -325,11 +324,14 @@ Value* compile(IRBuilder<>& builder,
   };
 
   switch (expression.index()) {
+    case CONSTANT: {
+      return get<CONSTANT>(expression);
+    }
     case VAR: {
       auto var = get<VAR>(expression);
       if (auto iter = unit.assignedConstant.find(var);
           iter != unit.assignedConstant.end())
-        if (auto c = get_if<Constant*>(&iter->second))
+        if (auto c = get_if<ConstantData*>(&iter->second))
           return *c;
       auto iter = variables.find(var);
       if (iter == variables.end())
@@ -365,14 +367,27 @@ Value* compile(IRBuilder<>& builder,
     }
     case FN: {
       astContext.isListCPSFunction = false; // We can do this here, as the CPS code below calls compileFunction directly
-      astContext.isRecordFunction = false; // We can do this here, as the CPS code below calls compileFunction directly
+      astContext.isRecordFunction = 0; // We can do this here, as the CPS code below calls compileFunction directly
       return compileFunction(&builder, expression, variables, unit, astContext);
     }
     case LET: {
       auto& [let_var, assign_exp, body_exp] = get<LET>(expression);
 
+      {
+        auto fnOccurInLet = freeVarOccurrences(body_exp, &expression, unit);
+        auto [occur_first, occur_last] = fnOccurInLet.equal_range(let_var);
+        if (get_if<FN>(&assign_exp) && std::all_of(occur_first, occur_last, [] (auto& o) {
+          auto app = get_if<APP>(o.second.enclosing_exp);
+          if (app)
+            return app && &get<0>(*app) == o.second.holding_exp;
+          return false;
+        }))
+          astContext.isSolelyApplied = true;
+      }
+
       //! Compile this first, need functions to exist in module
       auto assign_value = recurse(assign_exp, false);
+      astContext.isSolelyApplied = false;
 
       {
         // Walk down the let chain
@@ -402,7 +417,7 @@ Value* compile(IRBuilder<>& builder,
       if (auto i = get_if<INT>(&assign_exp))
         unit.assignedConstant[let_var] = ConstantInt::get(genericIntType, *i);
       if (auto f = get_if<REAL>(&assign_exp))
-        unit.assignedConstant[let_var] = ConstantFP::get(realType, *f);
+        unit.assignedConstant[let_var] = cast<ConstantData>(ConstantFP::get(realType, *f));
       if (auto fn = get_if<FN>(&assign_exp)) {
         auto p = module.getFunction(nameForFunction(get<lvar>(*fn)));
         assert(p);
@@ -451,9 +466,8 @@ Value* compile(IRBuilder<>& builder,
         return result;
       }
 
-      if (auto lvar_ptr = get_if<VAR>(&fn_exp); lvar_ptr && unit.assignedConstant.count(*lvar_ptr))
-        if (auto variant = unit.assignedConstant[*lvar_ptr]; auto fn_p = get_if<Function*>(&variant)) {
-        auto fn = *fn_p;
+      if (auto fn_p = get_if<FUNCTION>(&fn_exp)) {
+        auto& [fn, var] = *fn_p;
 
         std::vector<Value*> arguments;
         if (auto f = module.getFunction("rec_" + std::string{fn->getName()}); f && arg_exp.get().index() == RECORD) {
@@ -465,14 +479,10 @@ Value* compile(IRBuilder<>& builder,
         else
           arguments.push_back(box(builder, recurse(arg_exp, false)));
 
-        auto iter = std::find_if(unit.closureLength.begin(), unit.closureLength.end(), [fn] (auto const& pair) {
-          return pair.first == fn;
-        });
-        assert(iter != unit.closureLength.end());
-        if (iter->second == 0)
-          arguments.push_back(ConstantPointerNull::get(genericPointerType));
+        if (var == 0)
+          arguments.push_back(ConstantPointerNull::get(closurePointerType));
         else
-          arguments.push_back(builder.CreatePointerCast(recurse(fn_exp, false), closurePointerType, "closure_ptr"));
+          arguments.push_back(builder.CreatePointerCast(variables.at(var), closurePointerType, "closure_ptr"));
 
         return builder.CreateCall(fn, arguments, "direct_call");
       }
@@ -516,7 +526,7 @@ Value* compile(IRBuilder<>& builder,
       for (auto& [var, _, fn] : decls) {
         std::size_t clos_index = 0;
         for (auto clos : closure_prs) {
-          auto freevars = freeVars(get<lexp>(decls[clos_index++]));
+          auto freevars = freeVars(get<lexp>(decls[clos_index++]), unit);
           auto iter = freevars.find(var);
           if (iter != freevars.end()) { // If this closure captures the closure of var...
             auto pos = std::distance(freevars.begin(), iter);
@@ -723,8 +733,12 @@ Value* compile(IRBuilder<>& builder,
       auto& [indices, record] = get<SELECT>(expression);
       if (indices.size() != 1)
         throw UnsupportedException{"Nested indexing"};
-      auto record_v = builder.CreatePointerCast(recurse(record, false), genericPtrToPtr, "record_ptr");
-      return builder.CreateLoad(builder.CreateConstGEP1_32(record_v, indices[0] + 1, "selected_ptr"), "selected");
+      auto rec_v = recurse(record, false);
+      if (isa<GlobalVariable>(rec_v)) // import global variable
+        rec_v = builder.CreateLoad(rec_v, "imports");
+      else
+        rec_v = builder.CreatePointerCast(rec_v, genericPtrToPtr, "record_ptr");
+      return builder.CreateLoad(builder.CreateConstGEP1_32(rec_v, indices[0] + 1, "selected_ptr"), "selected");
     }
 
     case TFN:
