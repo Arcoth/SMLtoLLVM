@@ -216,6 +216,7 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
   auto memManager = memManagerUptr.get();
   std::string err_str;
   auto module = unit.module;
+  outs() << "Constructing ExecutionEngine...\n";
   auto EE = EngineBuilder{std::unique_ptr<Module>(unit.module)}
               .setErrorStr(&err_str)
               .setMemoryManager(move(memManagerUptr))
@@ -235,6 +236,7 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
   EE->addGlobalMapping(module->getGlobalVariable("largeHeapPtr"), &largeHeapPtr);
   EE->addGlobalMapping(module->getGlobalVariable("largeSizeLeft"), &largeSizeLeft);
 
+  outs() << "Generating code...\n";
   EE->generateCodeForModule(module);
 
   using alloc_t = void* (*)(std::uint64_t);
@@ -244,7 +246,9 @@ int execute(std::size_t functionIndex, SMLTranslationUnit& unit) {
   assert(StackMapPtr = memManager->stackMap());
 
   for (auto [fun, len] : unit.closureLength)
-    closureLengths[(void*)EE->getPointerToFunction(fun)] = len;
+    if (fun->getParent() == unit.module)
+      closureLengths[(void*)EE->getPointerToFunction(fun)] = len;
+
 
   std::vector<genericPointerTypeNative> imports{0}; // record tag takes one spot
   for (auto& [pid, indices] : unit.importTree)
