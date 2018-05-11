@@ -3,6 +3,11 @@
 #include "Lty.hpp"
 #include "Primop.hpp"
 
+namespace llvm {
+  class Function;
+  class ConstantData;
+}
+
 namespace SMLNJInterface::PLambda {
 
 using Lty::tyc;
@@ -79,9 +84,13 @@ struct lexp : LABELLED_VARIANT(
   (PACK, tuple<lty, vector<tyc>, vector<tyc>, dlexp>)
   (WRAP, tuple<tyc, bool, dlexp>)
   (UNWRAP, tuple<tyc, bool, dlexp>)
+
+  (FUNCTION, std::pair<llvm::Function*, lvar>)
+  (CONSTANT, llvm::ConstantData*)
 );
 
 std::istream& operator>>(std::istream& is, lexp& lexp);
+std::istream& operator<<(std::ostream& os, lexp const& lexp);
 
 //! Specifies that the next lambda expression cannot be a selection.
 std::istream& no_select(std::istream& is);
